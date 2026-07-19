@@ -1,14 +1,22 @@
 // evidence-explorer-plugin.mjs
-import { readFileSync, readdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+//
+// The explorer consumes the versioned contract in evidence/schema. Older
+// per-section packages are adapted at this single boundary; the widget never
+// needs to guess which historical producer created a package.
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { resolve, dirname, basename } from 'node:path';
+
+export const EVIDENCE_SCHEMA_VERSION = '1.0.0';
+const CANONICAL_FILENAME = /^evidence_section_(\d+)\.json$/;
+const LEGACY_FILENAMES = [
+  /^section_(\d+)_evidence_package\.json$/,
+  /^section_(\d+)_evidence\.json$/,
+];
 
 const evidenceDirective = {
   name: 'evidence-explorer',
-  doc: 'Interactive evidence database explorer widget. The :evidence-dir: option is resolved relative to the calling markdown file. Default "../evidence" is correct when the directive is placed in a content/*.md page (the conventional layout).',
-  options: {
-    'evidence-dir': { type: String },
-    height: { type: String },
-  },
+  doc: 'Interactive evidence database explorer. Packages are discovered from evidence/manifest.json or documented evidence filename patterns.',
+  options: { 'evidence-dir': { type: String }, height: { type: String } },
   run(data) {
     return [{
       type: 'evidence-explorer',
@@ -18,213 +26,211 @@ const evidenceDirective = {
   },
 };
 
-// Universal conflict normalizer — handles all 15+ schema variants
-function normalizeConflict(c, sec) {
-  const norm = { section: sec };
+function asArray(value) { return Array.isArray(value) ? value : []; }
+function integer(value) { return Number.isInteger(value) && value >= 0; }
+function text(value) { return typeof value === 'string' && value.trim().length > 0; }
 
-  // Description / topic
-  norm.topic = c.topic || c.description || '';
-  norm.nature_of_conflict = c.nature_of_conflict || c.description || c.topic || '';
-  norm.resolution_status = c.resolution_status || c.resolution || '';
-
-  // Extract Side A text
-  if (c.paper1_claim) {
-    norm.side_a = c.paper1_claim;
-  } else if (c.paper_a_claim) {
-    norm.side_a = c.paper_a_claim;
-  } else if (c.claim_a) {
-    norm.side_a = c.claim_a;
-  } else if (typeof c.side_a === 'string') {
-    norm.side_a = c.side_a;
-  } else if (c.side_a && typeof c.side_a === 'object') {
-    norm.side_a = c.side_a.position || c.side_a.claim || JSON.stringify(c.side_a).slice(0, 200);
-  } else {
-    norm.side_a = '';
+/**
+ * Validate the current contract without adding a runtime JSON-schema package.
+ * The normative, machine-readable definition is evidence/schema/package.schema.json.
+ */
+export function validateCanonicalPackage(value) {
+  const errors = [];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return ['package must be an object'];
+  if (value.evidence_package_schema_version !== EVIDENCE_SCHEMA_VERSION) {
+    errors.push(`evidence_package_schema_version must be ${EVIDENCE_SCHEMA_VERSION}`);
   }
-
-  // Extract Side B text
-  if (c.paper2_claim) {
-    norm.side_b = c.paper2_claim;
-  } else if (c.paper_b_claim) {
-    norm.side_b = c.paper_b_claim;
-  } else if (c.claim_b) {
-    norm.side_b = c.claim_b;
-  } else if (typeof c.side_b === 'string') {
-    norm.side_b = c.side_b;
-  } else if (c.side_b && typeof c.side_b === 'object') {
-    norm.side_b = c.side_b.position || c.side_b.claim || JSON.stringify(c.side_b).slice(0, 200);
-  } else {
-    norm.side_b = '';
+  if (!value.section || typeof value.section !== 'object') errors.push('section is required');
+  else {
+    if (!integer(value.section.order)) errors.push('section.order must be a non-negative integer');
+    if (!text(value.section.id)) errors.push('section.id must be a non-empty string');
+    if (!text(value.section.title)) errors.push('section.title must be a non-empty string');
   }
-
-  // Extract DOIs — try all known field patterns
-  norm.paper_a_doi = c.paper1_doi || c.paper_a_doi || '';
-  norm.paper_b_doi = c.paper2_doi || c.paper_b_doi || '';
-
-  // If no DOIs from direct fields, try to extract from nested structures
-  if (!norm.paper_a_doi) {
-    // Check side_a dict for DOIs
-    if (c.side_a && typeof c.side_a === 'object') {
-      const evidence = c.side_a.supporting_evidence || c.side_a.evidence || '';
-      const doiMatch = String(evidence).match(/10\.\d{4,}\/[^\s,;)]+/);
-      if (doiMatch) norm.paper_a_doi = doiMatch[0];
-    }
-    // Check papers_side_a, papers_supporting_view_a, etc.
-    for (const key of Object.keys(c)) {
-      if (key.includes('papers') && key.includes('a') && Array.isArray(c[key])) {
-        const dois = c[key].filter(p => typeof p === 'string' && p.startsWith('10.'));
-        if (dois.length > 0) norm.paper_a_doi = dois.join(', ');
-      }
+  for (const field of ['findings', 'conflicts', 'figure_data', 'evidence_gaps']) {
+    if (!Array.isArray(value[field])) errors.push(`${field} must be an array`);
+  }
+  if (!value.provenance || typeof value.provenance !== 'object') errors.push('provenance is required');
+  for (const [index, finding] of asArray(value.findings).entries()) {
+    if (!finding || typeof finding !== 'object' || Array.isArray(finding)) { errors.push(`findings[${index}] must be an object`); continue; }
+    if (!text(finding.claim)) errors.push(`findings[${index}].claim must be a non-empty string`);
+    if (!asArray(finding.sources).length) errors.push(`findings[${index}].sources must contain a source`);
+    for (const [sourceIndex, source] of asArray(finding.sources).entries()) {
+      if (!source || typeof source !== 'object' || !text(source.source_id)) errors.push(`findings[${index}].sources[${sourceIndex}].source_id is required`);
     }
   }
-  if (!norm.paper_b_doi) {
-    if (c.side_b && typeof c.side_b === 'object') {
-      const evidence = c.side_b.supporting_evidence || c.side_b.evidence || '';
-      const doiMatch = String(evidence).match(/10\.\d{4,}\/[^\s,;)]+/);
-      if (doiMatch) norm.paper_b_doi = doiMatch[0];
-    }
-    for (const key of Object.keys(c)) {
-      if (key.includes('papers') && key.includes('b') && Array.isArray(c[key])) {
-        const dois = c[key].filter(p => typeof p === 'string' && p.startsWith('10.'));
-        if (dois.length > 0) norm.paper_b_doi = dois.join(', ');
-      }
-    }
-  }
+  return errors;
+}
 
-  // For papers[] array format — extract DOIs from array items
-  if (Array.isArray(c.papers) && (!norm.paper_a_doi || !norm.paper_b_doi)) {
-    const dois = c.papers
-      .map(p => typeof p === 'string' ? p : (p.doi || ''))
-      .filter(d => d);
-    if (dois.length >= 1 && !norm.paper_a_doi) norm.paper_a_doi = dois[0];
-    if (dois.length >= 2 && !norm.paper_b_doi) norm.paper_b_doi = dois[1];
+function legacyFinding(finding, index) {
+  if (!finding || typeof finding !== 'object' || Array.isArray(finding)) {
+    throw new Error(`legacy findings[${index}] must be an object`);
   }
+  const sourceId = finding.cite_key || finding.doi;
+  if (!text(finding.claim) || !text(sourceId)) {
+    throw new Error(`legacy findings[${index}] requires claim and cite_key or doi`);
+  }
+  const source = { source_id: sourceId };
+  if (text(finding.doi)) source.doi = finding.doi;
+  const passage = finding.claim_source_sentence || finding.supporting_passage;
+  if (text(passage)) source.supporting_passages = [{ text: passage, locator: finding.locator || undefined }];
+  return { ...finding, sources: [source] };
+}
 
-  // For section 12 custom fields (papers_supporting_divisive, papers_SST_carries_prediction, etc.)
-  if (!norm.paper_a_doi || !norm.paper_b_doi) {
-    const paperKeys = Object.keys(c).filter(k => k.startsWith('papers_'));
-    if (paperKeys.length >= 2) {
-      for (let i = 0; i < paperKeys.length && i < 2; i++) {
-        const val = c[paperKeys[i]];
-        const dois = Array.isArray(val) 
-          ? val.map(p => typeof p === 'string' ? p : (p.doi || '')).filter(d => d)
-          : [];
-        if (i === 0 && !norm.paper_a_doi && dois.length > 0) {
-          norm.paper_a_doi = dois.join(', ');
-          if (!norm.side_a) norm.side_a = paperKeys[0].replace('papers_', '').replace(/_/g, ' ');
+/** Adapt the two historical filenames/shapes explicitly supported by v1. */
+export function adaptEvidencePackage(raw, { filename = 'package.json' } = {}) {
+  if (raw?.evidence_package_schema_version === EVIDENCE_SCHEMA_VERSION) {
+    const errors = validateCanonicalPackage(raw);
+    if (errors.length) throw new Error(errors.join('; '));
+    return { package: raw, compatibility: 'canonical-v1' };
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('legacy package must be an object');
+  const match = filename.match(/(\d+)/);
+  const order = Number(raw.section_id ?? match?.[1]);
+  if (!integer(order)) throw new Error('legacy package requires numeric section_id or a section filename');
+  const findings = asArray(raw.findings).map(legacyFinding);
+  const section = { id: String(raw.section_id ?? order), order, title: raw.section_title || `Section ${order}` };
+  const packageV1 = {
+    evidence_package_schema_version: EVIDENCE_SCHEMA_VERSION,
+    section,
+    findings,
+    conflicts: asArray(raw.conflicts),
+    figure_data: asArray(raw.figure_data),
+    evidence_gaps: asArray(raw.evidence_gaps),
+    replication: raw.replication || { unreplicated_claims: asArray(raw.unreplicated_claims) },
+    provenance: raw.provenance || { migrated_from: filename, source_schema: 'legacy-section-package' },
+  };
+  const errors = validateCanonicalPackage(packageV1);
+  if (errors.length) throw new Error(errors.join('; '));
+  return { package: packageV1, compatibility: 'legacy-section-package' };
+}
+
+function patternEntry(filename) {
+  const canonical = filename.match(CANONICAL_FILENAME);
+  if (canonical) return { file: filename, order: Number(canonical[1]), compatibility: 'canonical-v1' };
+  for (const pattern of LEGACY_FILENAMES) {
+    const legacy = filename.match(pattern);
+    if (legacy) return { file: filename, order: Number(legacy[1]), compatibility: 'legacy-section-package' };
+  }
+  return null;
+}
+
+export function discoverEvidenceFiles(evidenceDir) {
+  if (!existsSync(evidenceDir)) return { mode: 'none', entries: [], error: 'evidence directory does not exist' };
+  const manifestPath = resolve(evidenceDir, 'manifest.json');
+  if (existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      if (manifest?.schema_version !== 1 || !Array.isArray(manifest.packages)) throw new Error('manifest requires schema_version: 1 and packages[]');
+      const entries = manifest.packages.map((entry, index) => {
+        if (!text(entry?.file) || entry.file !== basename(entry.file) || !entry.file.endsWith('.json') || !integer(entry?.order)) {
+          throw new Error(`manifest.packages[${index}] requires a local JSON file and non-negative order`);
         }
-        if (i === 1 && !norm.paper_b_doi && dois.length > 0) {
-          norm.paper_b_doi = dois.join(', ');
-          if (!norm.side_b) norm.side_b = paperKeys[1].replace('papers_', '').replace(/_/g, ' ');
-        }
-      }
-    }
+        return { file: entry.file, order: entry.order, compatibility: 'manifest' };
+      });
+      return { mode: 'manifest', entries: entries.sort((a, b) => a.order - b.order || a.file.localeCompare(b.file)) };
+    } catch (error) { return { mode: 'manifest-invalid', entries: [], error: error.message }; }
   }
+  const entries = readdirSync(evidenceDir, { withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => patternEntry(entry.name))
+    .filter(Boolean)
+    .sort((a, b) => a.order - b.order || a.file.localeCompare(b.file));
+  return { mode: 'pattern', entries };
+}
 
-  // Additional metadata
-  norm.likely_reason = c.likely_reason || c.assessment || c.notes || c.significance || c.why_it_matters || '';
+function diagnosticStatus({ directory, discovered, loaded, rejected }) {
+  if (directory.mode === 'none') return 'missing_directory';
+  if (directory.mode === 'manifest-invalid') return 'invalid_manifest';
+  if (!discovered.length) return 'no_compatible_files';
+  if (!loaded.length) return 'invalid_packages';
+  if (rejected.length) return 'partial_loading';
+  if (loaded.every(entry => entry.package.findings.length === 0)) return 'loaded_zero_findings';
+  return 'loaded';
+}
 
-  return norm;
+export function loadEvidenceDirectory(evidenceDir) {
+  const discovery = discoverEvidenceFiles(evidenceDir);
+  const loaded = [];
+  const rejected = [];
+  for (const entry of discovery.entries) {
+    const path = resolve(evidenceDir, entry.file);
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf-8'));
+      const adapted = adaptEvidencePackage(raw, { filename: basename(path) });
+      loaded.push({ ...entry, ...adapted });
+    } catch (error) { rejected.push({ file: entry.file, reason: error.message }); }
+  }
+  const status = diagnosticStatus({ directory: discovery, discovered: discovery.entries, loaded, rejected });
+  return {
+    status,
+    discovery_mode: discovery.mode,
+    diagnostics: {
+      message: discovery.error || null,
+      discovered: discovery.entries.map(entry => entry.file),
+      loaded: loaded.map(entry => ({ file: entry.file, compatibility: entry.compatibility })),
+      rejected,
+    },
+    packages: loaded.map(entry => entry.package),
+  };
+}
+
+function normalizeConflict(conflict, section) {
+  return {
+    ...conflict,
+    section,
+    topic: conflict.topic || conflict.description || '',
+    nature_of_conflict: conflict.nature_of_conflict || conflict.description || conflict.topic || '',
+    side_a: conflict.paper_a_claim || conflict.paper1_claim || conflict.claim_a || conflict.side_a || '',
+    side_b: conflict.paper_b_claim || conflict.paper2_claim || conflict.claim_b || conflict.side_b || '',
+    paper_a_doi: conflict.paper_a_doi || conflict.paper1_doi || '',
+    paper_b_doi: conflict.paper_b_doi || conflict.paper2_doi || '',
+  };
+}
+
+export function explorerDataFromLoad(result) {
+  const sections = [];
+  const findings = [];
+  const conflicts = [];
+  const figureData = [];
+  for (const pkg of result.packages) {
+    const section = pkg.section.order;
+    const packageFindings = pkg.findings.map(finding => {
+      const primarySource = finding.sources[0] || {};
+      return {
+        ...finding,
+        cite_key: finding.cite_key || primarySource.source_id,
+        doi: finding.doi || primarySource.doi || '',
+        claim_source_sentence: finding.claim_source_sentence || primarySource.supporting_passages?.[0]?.text || '',
+        section,
+        section_title: pkg.section.title,
+        tier: finding.tier || finding.replication_status,
+      };
+    });
+    const packageConflicts = pkg.conflicts.map(conflict => normalizeConflict(conflict, section));
+    const packageFigureData = pkg.figure_data.map(data => ({ ...data, section }));
+    sections.push({ section, title: pkg.section.title, papers: new Set(packageFindings.flatMap(f => f.sources.map(s => s.doi || s.source_id))).size, findings: packageFindings.length, conflicts: packageConflicts.length, figure_comparisons: packageFigureData.length });
+    findings.push(...packageFindings); conflicts.push(...packageConflicts); figureData.push(...packageFigureData);
+  }
+  return { sections, findings, conflicts, figure_data: figureData, evidence_status: result.status, diagnostics: result.diagnostics };
 }
 
 const evidenceTransform = {
   name: 'evidence-data-loader',
   stage: 'document',
-  plugin: (opts, utils) => (tree, vfile) => {
+  plugin: () => (tree, vfile) => {
     function transform(node) {
-      if (node == null) return;
-      if (node.type === 'evidence-explorer') {
-        const docDir = vfile?.path ? dirname(vfile.path) : process.cwd();
-        const evidenceDir = resolve(docDir, node.evidenceDir || '../evidence');
-        try {
-          const sections = [];
-          const allFindings = [];
-          const allConflicts = [];
-          const allFigureData = [];
-
-          for (let sec = 2; sec <= 13; sec++) {
-            const padded = String(sec).padStart(2, '0');
-            let filePath = resolve(evidenceDir, 'section_' + padded + '_evidence_package.json');
-            let raw;
-            try {
-              raw = readFileSync(filePath, 'utf-8');
-            } catch (e) {
-              try {
-                filePath = resolve(evidenceDir, 'section_' + padded + '_evidence.json');
-                raw = readFileSync(filePath, 'utf-8');
-              } catch (e2) { continue; }
-            }
-            
-            const ev = JSON.parse(raw);
-
-            // Extract findings
-            let findings = [];
-            const ag = ev.argument_groups;
-            if (ag && typeof ag === 'object') {
-              for (const [topicKey, topicVal] of Object.entries(ag)) {
-                if (topicVal && typeof topicVal === 'object') {
-                  const supporting = topicVal.supporting_findings || topicVal.supporting_evidence || [];
-                  const counter = topicVal.counter_findings || topicVal.counter_evidence || [];
-                  if (Array.isArray(supporting)) findings.push(...supporting);
-                  if (Array.isArray(counter)) findings.push(...counter);
-                }
-              }
-            }
-            if (Array.isArray(ev.unmatched_findings)) findings.push(...ev.unmatched_findings);
-            if (findings.length === 0 && Array.isArray(ev.findings)) findings = ev.findings;
-
-            // Normalize conflicts using the universal normalizer
-            const conflicts = (ev.conflicts || []).map(c => normalizeConflict(c, sec));
-
-            const figData = ev.figure_data || [];
-
-            findings.forEach(f => {
-              f.section = sec;
-              f.section_title = ev.section_title || '';
-              if (!f.tier && f.replication_status) f.tier = f.replication_status;
-            });
-            figData.forEach(fd => { fd.section = sec; });
-
-            sections.push({
-              section: sec,
-              title: ev.section_title || ('Section ' + sec),
-              papers: ev.unique_papers || ev.total_findings || findings.length,
-              findings: findings.length,
-              conflicts: conflicts.length,
-              figure_comparisons: figData.length,
-            });
-            allFindings.push(...findings);
-            allConflicts.push(...conflicts);
-            allFigureData.push(...figData);
-          }
-
-          node.type = 'anywidget';
-          node.id = 'evidence-explorer-' + Date.now() + '-' + Math.random().toString(36).slice(2,9);
-          node.esm = './evidence-explorer-widget.mjs';
-          node.model = {
-            evidence_data: JSON.stringify({
-              sections: sections,
-              findings: allFindings,
-              conflicts: allConflicts,
-              figure_data: allFigureData,
-            }),
-            height: node.height || '700px',
-          };
-        } catch (err) {
-          node.type = 'paragraph';
-          node.children = [{ type: 'text', value: '[Evidence Explorer error: ' + err.message + ']' }];
-        }
+      if (node?.type === 'evidence-explorer') {
+        const documentDir = vfile?.path ? dirname(vfile.path) : process.cwd();
+        const result = loadEvidenceDirectory(resolve(documentDir, node.evidenceDir || '../evidence'));
+        node.type = 'anywidget';
+        node.id = `evidence-explorer-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        node.esm = './evidence-explorer-widget.mjs';
+        node.model = { evidence_data: JSON.stringify(explorerDataFromLoad(result)), height: node.height || '700px' };
       }
-      if (node.children) {
-        for (const child of node.children) transform(child);
-      }
+      for (const child of node?.children || []) transform(child);
     }
     transform(tree);
   },
 };
 
-export default {
-  name: 'Evidence Explorer Plugin',
-  directives: [evidenceDirective],
-  transforms: [evidenceTransform],
-};
+export default { name: 'Evidence Explorer Plugin', directives: [evidenceDirective], transforms: [evidenceTransform] };

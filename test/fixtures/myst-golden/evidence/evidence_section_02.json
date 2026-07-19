@@ -1,0 +1,1 @@
+{"evidence_package_schema_version":"1.0.0","section":{"id":"fixture","order":2,"title":"Fixture evidence"},"findings":[{"claim":"A fixture finding","sources":[{"source_id":"Example2026","doi":"10.1000/fixture.2026","supporting_passages":[{"text":"Fixture passage","locator":"Results"}]}]}],"conflicts":[],"figure_data":[],"evidence_gaps":[],"provenance":{"fixture":true}}

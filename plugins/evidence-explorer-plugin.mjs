@@ -16,11 +16,12 @@ const LEGACY_FILENAMES = [
 const evidenceDirective = {
   name: 'evidence-explorer',
   doc: 'Interactive evidence database explorer. Packages are discovered from evidence/manifest.json or documented evidence filename patterns.',
-  options: { 'evidence-dir': { type: String }, height: { type: String } },
+  options: { 'evidence-dir': { type: String }, availability: { type: String }, height: { type: String } },
   run(data) {
     return [{
       type: 'evidence-explorer',
       evidenceDir: data.options?.['evidence-dir'] || '../evidence',
+      evidenceAvailability: data.options?.availability || 'available',
       height: data.options?.height || '700px',
     }];
   },
@@ -174,6 +175,30 @@ export function loadEvidenceDirectory(evidenceDir) {
   };
 }
 
+const BLOCKING_AVAILABLE_STATUSES = new Set([
+  'missing_directory', 'invalid_manifest', 'no_compatible_files', 'invalid_packages',
+]);
+
+/** Apply the page author's explicit declaration to a loader result. */
+export function applyEvidenceAvailability(result, availability = 'available') {
+  if (!['available', 'not_provided'].includes(availability)) {
+    throw new Error(`evidence-explorer :availability: must be available or not_provided (received ${availability})`);
+  }
+  if (availability === 'not_provided') {
+    return {
+      ...result,
+      status: 'not_provided',
+      packages: [],
+      diagnostics: { ...result.diagnostics, message: 'This review explicitly declares that no Evidence Database is provided.' },
+    };
+  }
+  if (BLOCKING_AVAILABLE_STATUSES.has(result.status)) {
+    const detail = result.diagnostics.message || result.diagnostics.rejected.map(entry => `${entry.file}: ${entry.reason}`).join('; ');
+    throw new Error(`Evidence Database is declared available but no compatible package could be loaded (${result.status}). ${detail}`);
+  }
+  return result;
+}
+
 function normalizeConflict(conflict, section) {
   return {
     ...conflict,
@@ -221,7 +246,8 @@ const evidenceTransform = {
     function transform(node) {
       if (node?.type === 'evidence-explorer') {
         const documentDir = vfile?.path ? dirname(vfile.path) : process.cwd();
-        const result = loadEvidenceDirectory(resolve(documentDir, node.evidenceDir || '../evidence'));
+        const loaded = loadEvidenceDirectory(resolve(documentDir, node.evidenceDir || '../evidence'));
+        const result = applyEvidenceAvailability(loaded, node.evidenceAvailability || 'available');
         node.type = 'anywidget';
         node.id = `evidence-explorer-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         node.esm = './evidence-explorer-widget.mjs';

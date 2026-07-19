@@ -5,5 +5,6 @@ Interactive explorer for the evidence packages underlying each section of the re
 
 :::{evidence-explorer}
 :evidence-dir: ../evidence
+:availability: not_provided
 :height: 800px
 :::

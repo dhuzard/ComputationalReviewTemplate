@@ -132,9 +132,9 @@ This substitutes for the citation-linker that `myst build` runs. **pass/fail**
 
 14a. **BIBLIOGRAPHY_PATH_MATCHES_MYSTYML** *(Phase 14V, 20V)*: Every path in `myst.yml`'s `project.bibliography` array must exist on disk, be at least 1 KB, and contain at least 100 BibTeX `@`-entries. Stubs (typically the upstream-template placeholder at `content/references.bib` containing only a comment line) are a hard fail — the build will silently emit "Could not link citation" for every cite key. **pass/fail**
 
-15. **EVIDENCE_JSONS_EXIST**: For each section `NN` in `1..len(scope["sections"])` (from `gate_scope.json`), `evidence/evidence_section_NN.json` exists. **pass/fail**
+15. **EVIDENCE_DATABASE_DECLARATION** *(Phase 14V, 19V, 20V)*: Parse the `:::{evidence-explorer}` directive. Its `:availability:` must be exactly `available` or `not_provided`. `not_provided` is valid only as an explicit declaration; it must render the truthful no-database state. **pass/fail**
 
-15a. **EVIDENCE_FINDINGS_ARE_OBJECTS** *(Phase 14V, 20V)*: For each `evidence/evidence_section_NN.json`, the top-level `findings` value must be an array of JSON objects, not strings. Validators that assign per-section metadata onto each entry crash on primitive strings; cite-key strings belong in `argument_groups[*].supporting_findings`, not in `findings`. **pass/fail**
+15a. **EVIDENCE_PACKAGES_LOADABLE** *(Phase 14V, 19V, 20V)*: Import `loadEvidenceDirectory` and `applyEvidenceAvailability` from the deployed plugin and run them against `evidence/`. When availability is `available`, zero compatible packages (`missing_directory`, `invalid_manifest`, `no_compatible_files`, `invalid_packages`) is a hard failure. `partial_loading` is also a hard failure at validation even though the reader-facing widget identifies it. A valid package set with zero findings passes and is reported distinctly. Gate output must list `discovered`, `loaded`, and `rejected` files. **pass/fail**
 
 16. **FIGURE_NOTEBOOK_MATCH**: Every `:::{figure} ../figures/<name>.png` referenced in any `content/*.md` has a corresponding `figures/notebooks/<name>.ipynb` on disk, AND every such notebook contains ≥1 non-empty code cell (i.e., is not a stub). **pass/fail**
 
@@ -211,11 +211,11 @@ Any other import is a fail. Reports offenders as `notebook:line:module`. **pass/
 
     Block check; **pass/fail**.
 
-22. **EVIDENCE_PACKAGES_POPULATED** *(Phase 14V, 20V)*: Strengthens
-    check #15. For each section `NN` in `1..len(scope["sections"])`:
-    `evidence/evidence_section_NN.json` must exist, be at least
-    1024 bytes, and parse as a JSON object containing the top-level keys
-    `section_id` and `findings` (array of objects, not strings). **pass/fail**.
+22. **EVIDENCE_EXPLORER_CONTRACT** *(Phase 14V, 20V)*: When availability is
+    `available`, canonical packages must validate as evidence-package schema v1
+    or through one explicitly supported compatibility adapter. A manifest, when
+    present, must validate and determine ordering; without it, discovery must
+    use only documented filename patterns and numeric ordering. **pass/fail**.
 
 23. **REVIEW_REQUEST_CAPTURED** *(Phase 14V, 20V)*: The Coordinator MUST
     have written the user's task description verbatim to provenance at
@@ -286,9 +286,9 @@ The validator's gate JSON (e.g. `gate_sections_drafted.json` at 7V, `gate_assemb
     "FIGURE_NOTEBOOK_SELF_CONTAINED": "pass|fail",
     "HEADING_STYLE_CONSISTENT": "pass|fail",
     "METHODS_LEDGER_FRESH": "pass|fail",
-    "EVIDENCE_JSONS_EXIST": "pass|fail",
-    "EVIDENCE_FINDINGS_ARE_OBJECTS": "pass|fail",
-    "EVIDENCE_PACKAGES_POPULATED": "pass|fail",
+    "EVIDENCE_DATABASE_DECLARATION": "pass|fail",
+    "EVIDENCE_PACKAGES_LOADABLE": "pass|fail",
+    "EVIDENCE_EXPLORER_CONTRACT": "pass|fail",
     "NO_WRITER_SCRATCHPAD": "pass|fail",
     "CITE_DIRECTIVE_SYNTAX_CLEAN": "pass|fail",
     "PLUGIN_DIRECTIVES_INVOKED": "pass|fail",
@@ -304,4 +304,3 @@ The validator's gate JSON (e.g. `gate_sections_drafted.json` at 7V, `gate_assemb
 **Mandatory:** `structural_results` MUST contain a key for **every numbered check defined in this skill that applies to the current phase**. Omitting a check key is itself a gate failure — the orchestrator MUST treat any missing expected key as `"fail"`. This prevents the silent-skip pattern where the validator agent runs only a subset of checks and reports `gate_passed: true` because the missing checks were never evaluated.
 
 If a check is genuinely not applicable to the current phase, emit `"<CHECK_NAME>": "n/a"` with a one-line `"<CHECK_NAME>_reason"` sibling key explaining why.
-

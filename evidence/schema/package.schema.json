@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alleninstitute.org/computational-review/evidence-package/1.0.0",
+  "title": "Computational Review evidence package",
+  "type": "object",
+  "required": ["evidence_package_schema_version", "section", "findings", "conflicts", "figure_data", "evidence_gaps", "provenance"],
+  "properties": {
+    "evidence_package_schema_version": { "const": "1.0.0" },
+    "section": { "type": "object", "required": ["id", "order", "title"], "properties": { "id": { "type": "string", "minLength": 1 }, "order": { "type": "integer", "minimum": 0 }, "title": { "type": "string", "minLength": 1 } } },
+    "findings": { "type": "array", "items": { "type": "object", "required": ["claim", "sources"], "properties": { "claim": { "type": "string", "minLength": 1 }, "sources": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["source_id"], "properties": { "source_id": { "type": "string", "minLength": 1 }, "doi": { "type": "string" }, "supporting_passages": { "type": "array", "items": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" }, "locator": { "type": "string" } } } } } } } } },
+    "conflicts": { "type": "array" },
+    "figure_data": { "type": "array" },
+    "evidence_gaps": { "type": "array" },
+    "replication": { "type": "object" },
+    "provenance": { "type": "object" }
+  }
+}

@@ -8,6 +8,8 @@ function render({ model, el }) {
   const findings = data.findings || [];
   const conflicts = data.conflicts || [];
   const figureData = data.figure_data || [];
+  const evidenceStatus = data.evidence_status || 'loaded';
+  const diagnostics = data.diagnostics || {};
   
   const height = model.get('height') || '700px';
   
@@ -101,6 +103,31 @@ function render({ model, el }) {
   const container = document.createElement('div');
   container.className = 'evidence-explorer';
   container.style.cssText = `max-height:${height};overflow:auto;font-family:system-ui,-apple-system,sans-serif;`;
+
+  const statusMessages = {
+    not_provided: 'No Evidence Database was provided for this review.',
+    missing_directory: 'Evidence Database unavailable: the evidence directory is missing.',
+    invalid_manifest: 'Evidence Database unavailable: its manifest is invalid.',
+    no_compatible_files: 'Evidence Database unavailable: no compatible evidence packages were found.',
+    invalid_packages: 'Evidence Database unavailable: discovered packages are invalid.',
+    partial_loading: 'Evidence Database is only partially available: one or more packages were rejected.',
+    loaded_zero_findings: 'Evidence packages loaded successfully; they legitimately contain zero findings.',
+  };
+  if (statusMessages[evidenceStatus]) {
+    const banner = document.createElement('div');
+    const severe = ['missing_directory', 'invalid_manifest', 'no_compatible_files', 'invalid_packages'].includes(evidenceStatus);
+    banner.setAttribute('role', severe ? 'alert' : 'status');
+    banner.style.cssText = `margin:0 0 16px;padding:12px 14px;border-radius:6px;font-size:13px;line-height:1.45;background:${severe ? '#fef2f2' : '#fffbeb'};border:1px solid ${severe ? '#fecaca' : '#fde68a'};color:${severe ? '#991b1b' : '#854d0e'};`;
+    banner.textContent = statusMessages[evidenceStatus];
+    const detail = diagnostics.message || (diagnostics.rejected || []).map(item => `${item.file}: ${item.reason}`).join('; ');
+    if (detail && evidenceStatus !== 'not_provided') {
+      const diagnostic = document.createElement('div');
+      diagnostic.style.cssText = 'margin-top:6px;font-size:11px;word-break:break-word;';
+      diagnostic.textContent = detail;
+      banner.appendChild(diagnostic);
+    }
+    container.appendChild(banner);
+  }
   
   // Tab bar
   const tabs = ['Overview', 'Findings', 'Conflicts', 'Figure Data'];

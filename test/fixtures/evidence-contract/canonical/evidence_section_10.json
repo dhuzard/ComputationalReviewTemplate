@@ -1,0 +1,1 @@
+{"evidence_package_schema_version":"1.0.0","section":{"id":"discussion","order":10,"title":"Discussion"},"findings":[{"claim":"Finding ten","sources":[{"source_id":"Example2026","doi":"10.1000/example.10","supporting_passages":[{"text":"A supporting passage.","locator":"Results"}]}]}],"conflicts":[],"figure_data":[],"evidence_gaps":[],"provenance":{"pipeline":"test"}}

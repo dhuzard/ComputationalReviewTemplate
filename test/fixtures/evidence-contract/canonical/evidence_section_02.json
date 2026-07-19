@@ -1,0 +1,1 @@
+{"evidence_package_schema_version":"1.0.0","section":{"id":"background","order":2,"title":"Background"},"findings":[{"claim":"Finding two","sources":[{"source_id":"Example2025","doi":"10.1000/example.2"}]}],"conflicts":[],"figure_data":[],"evidence_gaps":[],"provenance":{"pipeline":"test"}}

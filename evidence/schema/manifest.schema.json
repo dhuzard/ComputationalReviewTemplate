@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Computational Review evidence manifest",
+  "type": "object",
+  "required": ["schema_version", "packages"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "packages": { "type": "array", "items": { "type": "object", "required": ["file", "order"], "properties": { "file": { "type": "string", "pattern": "^[^/]+\\.json$" }, "order": { "type": "integer", "minimum": 0 } } } }
+  }
+}

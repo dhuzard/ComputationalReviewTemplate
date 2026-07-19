@@ -208,19 +208,19 @@ These groupings are suggestions, not mandates — the section writer may reorgan
 
 **Citation discipline:** Evidence packages must only contain papers from Phase 2 outputs. Do not introduce new citations during curation. If a gap is identified that requires additional evidence, flag it for a supplementary Phase 2 search rather than filling it from LLM memory.
 
-**Canonical schema (HARD RULE).** Every per-section package MUST follow this top-level shape:
+**Canonical schema (HARD RULE).** Every per-section package MUST validate against `evidence/schema/package.schema.json` (v1). The minimum top-level shape is:
 
 | key | type | content |
 |---|---|---|
-| `section_id` | string | `section_NN` |
-| `section_title` | string | verbatim from `gate_scope.json` |
-| `cluster_source` | string | `cluster_NN` |
-| `findings` | array of OBJECTS | each entry has `cite_key`, `doi`, `claim`, `claim_source_sentence`, `evidence`, `effect_size`, `n`, `study_system`, `replication_status`, `text_access`, `argument_role` |
-| `argument_groups` | object | each value has `thesis`, `supporting_findings` (cite_key STRINGS), `counter_findings` (cite_key STRINGS), `synthesis` |
+| `evidence_package_schema_version` | string | exactly `1.0.0` |
+| `section` | object | `id`, explicit numeric `order`, title verbatim from `gate_scope.json` |
+| `findings` | array of OBJECTS | each has `claim`, `sources[]` with a stable `source_id`; retain DOI, supporting passage, locator, citation key, study system, effect-size and replication fields when available |
 | `conflicts` | array of objects | canonical six-field schema `paper_a_doi/paper_b_doi/paper_a_claim/paper_b_claim/nature_of_conflict/resolution_status` |
-| `figure_data` | array of objects | each `comparison_id`, `papers` (array of objects), `metric`, `audit_verdict` |
+| `figure_data` / `evidence_gaps` | arrays | extracted comparison data and unresolved gaps |
+| `replication` | object | replication summaries, including unreplicated claims where applicable |
+| `provenance` | object | pipeline/retrieval/curation metadata sufficient to identify the producing run |
 
-The hard rule: `findings` is the canonical array of finding objects. `argument_groups[*].supporting_findings` and `counter_findings` are arrays of **cite_key strings** that reference `findings` by key — they are NOT finding objects. Downstream consumers (Phase 7 writers, evidence-explorer plugin, validators) MUST resolve `argument_groups[*].supporting_findings` to objects by lookup against `findings`, never by treating the array entries as objects themselves.
+The hard rule: `findings` is the canonical array of finding objects. Argument groupings may be retained as an optional producer convenience, but are not the runtime source of truth and cannot replace `findings`.
 
 **Output filename convention.** Use `evidence_section_NN.json` for the per-section package and `scaffold_section_NN.json` for the per-section scaffold extract. The two filename stems must not be confusable.
 
@@ -269,7 +269,9 @@ The key format rules are:
 - Disambiguation for same first-author + year: append a/b (e.g., Lee2012a, Lee2012b)
 
 **GATE ARTIFACT:** After all evidence packages pass the gate checks above,
-the coordinator saves `gate_evidence_curated.json`:
+the coordinator saves `gate_evidence_curated.json` with the package filenames,
+schema version, and a per-package validation result. Phase 14 consumes this
+artifact to materialize the manifest; it does not infer evidence from prose.
 
 *(Gate artifact built by DATAML — coordinator verifies coverage ≥75% and per-section floors)*
 
@@ -684,7 +686,11 @@ Phase 14 MUST also:
   must include its schema version, section id/order/title, findings with sources,
   conflicts, figure data, evidence gaps, replication information, and provenance.
   The Phase-14 actor MUST import the explorer loader and record its discovered,
-  loaded, and rejected file lists in `gate_assembly.json`.
+  loaded, and rejected file lists in `gate_assembly.json`. It MUST also write
+  `provenance/review_compatibility_report.json` following
+  `provenance/review_compatibility_report.template.json`: article and citation
+  levels come from the build gates, evidence-package level comes from the loader,
+  and any claim graph is reported only as an optional extension.
 a) Create `content/evidence_database.md` with an `:::{evidence-explorer}` directive.
    Use `:availability: available` only when the loader has at least one compatible
    package. A review deliberately published without an evidence database MUST use

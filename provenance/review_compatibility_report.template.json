@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generated_at": "ISO-8601 timestamp",
+  "validator_version": "template version or release commit",
+  "article_renderable": { "status": "pass", "evidence": ["myst build --html"] },
+  "citation_aware": { "status": "pass", "evidence": ["BIB_CITE_KEYS_RESOLVE"] },
+  "evidence_package_aware": {
+    "status": "not_provided",
+    "availability": "not_provided",
+    "package_schema_versions": [],
+    "loader_diagnostics": { "discovered": [], "loaded": [], "rejected": [] }
+  },
+  "claim_graph_aware": {
+    "status": "not_applicable",
+    "extensions": []
+  }
+}

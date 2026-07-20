@@ -71,7 +71,16 @@ JSON Schema is authoritative):
 An optional `manifest.json` has `schema_version: 1` and `packages` entries
 with a local `file` and explicit numeric `order`. It is recommended where
 section numbering is non-contiguous or file ordering should be declared rather
-than inferred.
+than inferred. Manifest filenames and manifest orders must each be unique, and
+every listed file must exist inside the evidence directory. Loaded packages
+must likewise have unique `section.order` values.
+
+The JSON Schemas define each document's structural contract. The explorer's
+dependency-free runtime validator mirrors those constraints and additionally
+enforces cross-file invariants that JSON Schema cannot express: manifest entry
+uniqueness, containment/existence of listed files, and unique package section
+orders. A package that declares an unknown or future schema version is rejected
+explicitly; it is never interpreted as a legacy package.
 
 ## How Files Are Generated
 

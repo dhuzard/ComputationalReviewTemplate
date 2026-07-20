@@ -102,6 +102,7 @@ function render({ model, el }) {
   el.innerHTML = '';
   const container = document.createElement('div');
   container.className = 'evidence-explorer';
+  container.dataset.evidenceStatus = evidenceStatus;
   container.style.cssText = `max-height:${height};overflow:auto;font-family:system-ui,-apple-system,sans-serif;`;
 
   const statusMessages = {
@@ -116,7 +117,10 @@ function render({ model, el }) {
   if (statusMessages[evidenceStatus]) {
     const banner = document.createElement('div');
     const severe = ['missing_directory', 'invalid_manifest', 'no_compatible_files', 'invalid_packages'].includes(evidenceStatus);
+    banner.className = 'evidence-explorer-status';
+    banner.dataset.status = evidenceStatus;
     banner.setAttribute('role', severe ? 'alert' : 'status');
+    banner.setAttribute('aria-live', severe ? 'assertive' : 'polite');
     banner.style.cssText = `margin:0 0 16px;padding:12px 14px;border-radius:6px;font-size:13px;line-height:1.45;background:${severe ? '#fef2f2' : '#fffbeb'};border:1px solid ${severe ? '#fecaca' : '#fde68a'};color:${severe ? '#991b1b' : '#854d0e'};`;
     banner.textContent = statusMessages[evidenceStatus];
     const detail = diagnostics.message || (diagnostics.rejected || []).map(item => `${item.file}: ${item.reason}`).join('; ');

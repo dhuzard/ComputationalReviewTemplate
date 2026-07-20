@@ -1,10 +1,9 @@
-name: Build and Deploy MyST Site
+name: Deploy MyST site
 
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: true
 
 jobs:
@@ -21,29 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        run: |
-          pip install mystmd jupyter matplotlib numpy pandas seaborn
-          npm install -g mystmd
+      - name: Install pinned MyST CLI
+        run: npm install --global mystmd@1.10.1
 
-      - name: Execute figure notebooks
+      - name: Confirm committed figure renders
         run: |
-          if ls figures/notebooks/*.ipynb 1>/dev/null 2>&1; then
-            for nb in figures/notebooks/*.ipynb; do
-              echo "Executing $nb..."
-              jupyter execute "$nb" --timeout=120
-            done
-          else
-            echo "No figure notebooks found"
-          fi
+          echo "Figure notebooks are reproducibility artifacts and are not executed during deployment."
+          find figures -maxdepth 1 -type f -name '*.png' -print
 
       - name: Build MyST site
         env:
@@ -51,13 +38,11 @@ jobs:
         run: myst build --html
 
       - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v4
         with:
           path: _build/html
 
   deploy:
-    if: github.ref == 'refs/heads/main'
     needs: build
     environment:
       name: github-pages

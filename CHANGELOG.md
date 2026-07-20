@@ -47,7 +47,7 @@ The two filename stems are now distinct enough that VID-swap errors at delegatio
 
 ## Phase rule changes
 
-- **Phase 5** (`comprev-dataml-phases.md`): explicit canonical schema for per-section evidence packages — `findings` is the array of finding objects; `argument_groups[*].supporting_findings` are cite-key strings
+- **Phase 5** (`comprev-dataml-phases.md`): explicit versioned evidence-package v1 contract; `findings` is the runtime source of truth and optional argument groupings cannot replace it
 - **Phase 11** (`comprev-integration.md`): `master_citation_list` is computed as the union of cite-keys across body sections; Introduction and Conclusion may only cite from this set, asserted before `submit_output`. Frontmatter and AI-Disclosure are held to the same `FORBIDDEN_LEXICON` standard as bodies
 - **Phase 14** (`comprev-dataml-phases.md`): bibliography file MUST be written to every path declared in `myst.yml` `project.bibliography` — and a stub at `content/references.bib` MUST be overwritten with the full Phase-9 bibliography
 - **Phase 6** (`comprev-figure-audit.md`): SPLIT and REDESIGN verdicts permit two resolution routes — full figure-construction re-delegation, OR coordinator downgrade to `CAVEAT_FORCED` with the `suggested_restructure` injected as a `Phase 7 writer:` caveat (only when the restructure needs no new data)

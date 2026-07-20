@@ -7,7 +7,7 @@
 
 Before any of the per-section or aggregate checks below run, the validator MUST verify it loaded the correct artifact type for each input. The Phase 5 actor emits two artifacts per section that look superficially similar:
 
-- `evidence_section_NN.json` — the per-section evidence package (top-level keys include `section_id`, `findings`, `argument_groups`, `conflicts`, `figure_data`, `cluster_source`).
+- `evidence_section_NN.json` — the canonical per-section evidence package (versioned contract: `evidence_package_schema_version`, `section`, `findings`, `conflicts`, `figure_data`, `evidence_gaps`, `provenance`).
 - `scaffold_section_NN.json` — the per-section scaffold extract (top-level keys include `section_id`, `section_plan`, `previous_section`, `next_section`, `figure_specs`, `figure_style_guide`, `cross_cutting_elements`).
 
 For each VID handed to the validator, parse the top-level keys and assert:
@@ -20,7 +20,7 @@ def assert_is_evidence_package(path, data):
             f"WRONG_ARTIFACT_TYPE at {path}: expected evidence package, "
             f"got scaffold extract (top-level keys: {sorted(keys)})"
         )
-    required = {"section_id", "findings", "argument_groups", "conflicts", "figure_data"}
+    required = {"evidence_package_schema_version", "section", "findings", "conflicts", "figure_data", "evidence_gaps", "provenance"}
     missing = required - keys
     if missing:
         raise RuntimeError(
@@ -29,17 +29,17 @@ def assert_is_evidence_package(path, data):
         )
 ```
 
-A `WRONG_ARTIFACT_TYPE` or `SCHEMA_INVALID` exception fails the gate immediately with the diagnostic in the gate JSON — do not attempt to run the downstream checks against a stub or the wrong artifact.
+A `WRONG_ARTIFACT_TYPE` or `SCHEMA_INVALID` exception fails the gate immediately with the diagnostic in the gate JSON — do not attempt to run the downstream checks against a stub or the wrong artifact. The authoritative contract is `evidence/schema/package.schema.json`; only compatibility adapters registered by `evidence-explorer-plugin.mjs` may load pre-v1 artifacts.
 
 ## Per-Section Checks
 
 1. **TRACEABLE**: Every finding's DOI exists in Phase 2 cluster evidence? **pass/fail**
 2. **NO_INTRA_SECTION_DUPLICATES**: No two findings in same section have identical `claim_source_sentence`? **pass/fail**
 3. **CROSS_SECTION_DIFFERENTIATION**: Same DOI in multiple sections → different `claim_source_sentence`? **pass/fail**
-4. **CITE_KEY_ASSIGNED**: Every finding has non-empty `cite_key`? **pass/fail**
-5. **HAS_DOI**: Every finding has non-empty `doi`? **pass/fail**
+4. **SOURCE_IDENTIFIER_ASSIGNED**: Every finding has at least one source with non-empty `source_id`? **pass/fail**
+5. **DOI_RETAINED_WHEN_AVAILABLE**: Every DOI supplied by Phase 2 is retained in the finding source record? **pass/fail**
 6. **TEXT_ACCESS_VALID**: Every finding's `text_access` is one of `fulltext` or `abstract_only`? **pass/fail** (papers with neither full text nor abstract MUST be excluded entirely — never recorded with a placeholder)
-7. **FINDINGS_ARE_OBJECTS**: Top-level `findings` array contains finding objects (`dict` entries with `cite_key`, `doi`, `claim`), not cite_key strings. Cite_key strings belong in `argument_groups[*].supporting_findings`. **pass/fail**
+7. **FINDINGS_ARE_OBJECTS**: Top-level `findings` array contains finding objects with `claim` and `sources[]`, not cite-key strings. **pass/fail**
 
 ## Aggregate Checks
 

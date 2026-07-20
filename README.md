@@ -120,6 +120,13 @@ Pre-configured pages that the pipeline populates:
 
 **Act 4 — Deploy Polish** (Phase 21): Post-deployment UX gate. Tier-A static checks (forbidden lexicon, author identity, directive rendering, frontmatter leak, figure dropdown completeness, asset paths, plugin data binding, internal link health) run against the built Pages-artifact tarball downloaded via the GitHub API — works on private repositories. Tier-B live-URL checks (per-page HTTP, external link health) downshift to a user-runnable manual checklist when the deployed site is unreachable from the validator sandbox.
 
+## Compatibility reporting
+
+Assembly writes a provenance compatibility report covering article rendering,
+citation resolution, evidence-package loading, and the presence of optional
+extensions such as claim graphs. Claim graphs are reported, never required or
+interpreted by the generic template. See [the compatibility-report contract](docs/evidence-compatibility.md).
+
 ### Evidence Parameters
 
 The pipeline's evidence-gathering depth is user-configurable via the prompt. Phase 1 extracts these from your review request:
@@ -175,4 +182,3 @@ If you use this template in your research, please cite:
 ```
 
 > Lecoq, J. (2026). *AllenNeuralDynamics/ComputationalReviewTemplate* (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.21213212
-

@@ -3,43 +3,54 @@
 This directory contains the structured evidence packages that power the
 interactive Evidence Explorer widget on the review site.
 
-## Expected File Format
+## Evidence-package contract
 
-The `evidence-explorer-plugin.mjs` scans this directory for per-section
-JSON files named:
+The canonical contract is version **1.0.0**. Its machine-readable schemas are
+[`schema/package.schema.json`](schema/package.schema.json) and
+[`schema/manifest.schema.json`](schema/manifest.schema.json). A canonical
+package is named `evidence_section_NN.json` and includes a schema version,
+explicit section ID/order/title, findings with source identifiers (and DOIs,
+supporting passages, and locators when available), conflicts, figure data,
+evidence gaps, replication information, and provenance metadata.
+
+Use `manifest.json` for an explicit package list and ordering. If it is absent,
+the explorer discovers these documented filenames and orders them by numeric
+section order, never filesystem order:
 
 ```
-section_02_evidence_package.json
-section_03_evidence_package.json
+evidence_section_02.json
+evidence_section_03.json
 ...
-section_NN_evidence_package.json
+evidence_section_NN.json
 ```
 
-One file per core review section. Section numbering starts at 02 (the
-Introduction is section 01 and has no evidence package); the upper bound is
-set by the user's table of contents — typical reviews land between section_08
-and section_13, but the orchestrator is agnostic to the exact section count.
+The explorer also has a deliberately bounded compatibility adapter for the
+existing `section_NN_evidence_package.json`, `section_NN_evidence.json`, and
+pre-versioned `evidence_section_NN.json` shapes. New reviews must produce the
+canonical v1 format; historical variants are not an open-ended support promise.
 
-## JSON Schema
+An evidence directory can contain any number of sections. The build exposes one
+of these statuses rather than silently rendering an indistinguishable empty
+viewer: missing directory, invalid manifest, no compatible files, invalid
+packages, partial loading, valid zero findings, or loaded.
 
-Each per-section file must contain:
+## Canonical package example
+
+Each newly generated per-section file must contain the following shape (the
+JSON Schema is authoritative):
 
 ```json
 {
-  "section_title": "Human-readable section title",
+  "evidence_package_schema_version": "1.0.0",
+  "section": {"id": "mechanisms", "order": 2, "title": "Mechanisms"},
   "findings": [
     {
       "claim": "What the paper found",
-      "claim_source_sentence": "Verbatim sentence from paper",
-      "effect_size": "Quantitative magnitude (or 'not reported')",
-      "effect_size_source_sentence": "Verbatim sentence supporting the effect size",
-      "n": 0,
-      "study_system": "mouse | human | ...",
-      "replication_status": "independently_replicated | replication_unknown | contested",
-      "replication_evidence_dois": ["10.xxxx/..."],
-      "doi": "10.xxxx/...",
-      "text_access": "fulltext | abstract_only",
-      "evidence": "Optional supporting context"
+      "sources": [{
+        "source_id": "Author2026",
+        "doi": "10.xxxx/example",
+        "supporting_passages": [{"text": "Verbatim supporting passage", "locator": "Results, paragraph 2"}]
+      }]
     }
   ],
   "conflicts": [
@@ -51,14 +62,16 @@ Each per-section file must contain:
     }
   ],
   "figure_data": [],
-  "unreplicated_claims": [],
   "evidence_gaps": [],
-  "strongest_evidence": {},
-  "weakest_evidence_cited": {},
-  "unique_papers": 0,
-  "total_findings": 0
+  "replication": {"unreplicated_claims": []},
+  "provenance": {"pipeline_version": "…", "generated_at": "ISO-8601 timestamp"}
 }
 ```
+
+An optional `manifest.json` has `schema_version: 1` and `packages` entries
+with a local `file` and explicit numeric `order`. It is recommended where
+section numbering is non-contiguous or file ordering should be declared rather
+than inferred.
 
 ## How Files Are Generated
 
@@ -69,4 +82,3 @@ and copy these into this directory.
 A combined `evidence_database.json` may also be generated, but the
 evidence-explorer plugin does **not** read it directly — it requires
 the individual per-section files.
-

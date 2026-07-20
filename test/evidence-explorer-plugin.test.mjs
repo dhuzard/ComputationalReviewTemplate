@@ -3,7 +3,7 @@ import test from 'node:test';
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverEvidenceFiles, explorerDataFromLoad, loadEvidenceDirectory } from '../plugins/evidence-explorer-plugin.mjs';
+import { applyEvidenceAvailability, discoverEvidenceFiles, explorerDataFromLoad, loadEvidenceDirectory } from '../plugins/evidence-explorer-plugin.mjs';
 
 const fixtures = new URL('./fixtures/evidence-contract/', import.meta.url);
 function fixture(name) {
@@ -78,4 +78,12 @@ test('reports partial loading and valid zero findings separately', () => {
     rmSync(join(zero, 'evidence_section_10.json'));
     assert.equal(loadEvidenceDirectory(zero).status, 'loaded_zero_findings');
   } finally { cleanup(zero); }
+});
+
+test('requires a declared Evidence Database to have a compatible package', () => {
+  const absent = join(tmpdir(), `missing-evidence-${Date.now()}`);
+  assert.throws(() => applyEvidenceAvailability(loadEvidenceDirectory(absent)), /declared available/);
+  const declaredAbsent = applyEvidenceAvailability(loadEvidenceDirectory(absent), 'not_provided');
+  assert.equal(declaredAbsent.status, 'not_provided');
+  assert.match(declaredAbsent.diagnostics.message, /explicitly declares/);
 });

@@ -23,7 +23,9 @@ The two filename stems are now distinct enough that VID-swap errors at delegatio
 |---|---|---|
 | `BIBLIOGRAPHY_PATH_MATCHES_MYSTYML` | 14V, 20V | Every path in `myst.yml` `project.bibliography` exists, ≥1 KB, ≥100 `@`-entries |
 | `BIB_CITE_KEYS_RESOLVE` | 14V, 20V (fallback) | When `myst build` is deferred, every `{cite:[pt]}` and `\cite[pt]` key in `content/*.md` + `latex/manuscript.tex` resolves in the declared bibliography |
-| `EVIDENCE_FINDINGS_ARE_OBJECTS` | 14V, 20V | `findings` arrays contain finding objects, not cite_key strings |
+| `EVIDENCE_DATABASE_DECLARATION` | 14V, 19V, 20V | The Evidence Explorer explicitly declares `available` or `not_provided` |
+| `EVIDENCE_PACKAGES_LOADABLE` | 14V, 19V, 20V | A declared database has compatible packages; diagnostics list discovered, loaded, and rejected files |
+| `EVIDENCE_EXPLORER_CONTRACT` | 14V, 20V | Package validation, manifest/discovery, and deterministic ordering follow the versioned contract |
 | `FIGURE_NOTEBOOK_SELF_CONTAINED` | 14V, 20V | Notebooks are runnable in a vanilla SciPy environment; only `shared_style` may be project-local, and every symbol it exports is actually defined |
 | `NO_WRITER_SCRATCHPAD` | 7V, 14V, 19V, 20V | Body prose contains no LLM-thinking markers |
 | `CITE_DIRECTIVE_SYNTAX_CLEAN` | 7V, 14V, 19V, 20V | No stray backtick before `{cite:[pt]}`; no missing opening backtick after |

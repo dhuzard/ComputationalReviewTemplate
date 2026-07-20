@@ -676,18 +676,19 @@ Phase 14 MUST NOT rewrite myst.yml from scratch. Instead:
 
 **MANDATORY — Site infrastructure:**
 Phase 14 MUST also:
-- **Split evidence database into per-section files for the evidence-explorer plugin.**
-  The evidence-explorer plugin reads `evidence/evidence_section_NN.json` files,
-  one per section in `gate_scope.json`'s `sections` list (same canonical filename
-  convention as Phase 5). Phase 14 MUST:
-  1. Read the combined evidence database (or per-section packages from Phase 5)
-  2. Read `gate_scope.json` to determine the section range (`n_sections = len(scope["sections"])`)
-  3. For each section `1..n_sections`, extract that section's findings, conflicts, and figure_data
-  4. Save as `evidence/evidence_section_NN.json` with required keys:
-     `section_id`, `section_title`, `findings` (array of finding **objects**, not cite_key strings),
-     `argument_groups` (object), `conflicts`, `figure_data`, `unique_papers`, `total_findings`
-  5. Verify all `n_sections` files exist and are non-empty before proceeding
-a) Create `content/evidence_database.md` with `:::{evidence-explorer}` directive
+- **Materialize canonical evidence packages for the evidence-explorer plugin.**
+  Phase 5 emits canonical v1 packages. Phase 14 MUST copy them unchanged into
+  `evidence/`, naming them `evidence_section_NN.json`, and write `evidence/manifest.json`
+  (`schema_version: 1`; entries contain local filename and explicit numeric order).
+  Do not reconstruct findings from prose or emit empty placeholders. Every package
+  must include its schema version, section id/order/title, findings with sources,
+  conflicts, figure data, evidence gaps, replication information, and provenance.
+  The Phase-14 actor MUST import the explorer loader and record its discovered,
+  loaded, and rejected file lists in `gate_assembly.json`.
+a) Create `content/evidence_database.md` with an `:::{evidence-explorer}` directive.
+   Use `:availability: available` only when the loader has at least one compatible
+   package. A review deliberately published without an evidence database MUST use
+   `:availability: not_provided`; this is the only valid empty state.
 b) Create `content/provenance.md` with pipeline summary from gate artifacts
 c) Add `:::{authorship-explorer}` with `:authors: ../authors.yml` to `content/00_frontmatter.md` ONLY (after the abstract, before the body)
 d) Verify `myst.yml` `project.toc` lists ALL `content/*.md` files (count must match)
@@ -711,23 +712,15 @@ before handing off to the validator. Treat these as a hard gate:
    fails when only a directive of that name exists) — convert to
    `:::{name}` ... `:::` block syntax.
 
-2. **Evidence package population.** After the per-section split:
-   ```python
-   n_sections = len(json.load(open("gate_scope.json"))["sections"])
-   for xx in range(1, n_sections + 1):
-       p = pathlib.Path(f"evidence/evidence_section_{xx:02d}.json")
-       assert p.exists() and p.stat().st_size > 1024, p
-       data = json.loads(p.read_text())
-       assert "section_id" in data and "findings" in data, p
-       # findings must be an array of finding OBJECTS, not cite_key strings —
-       # downstream consumers (evidence-explorer plugin) assign per-entry
-       # metadata onto each finding and crash on primitive strings.
-       assert all(isinstance(f, dict) for f in data["findings"]), \
-           f"{p}: findings array contains non-object entries"
+2. **Evidence package population and loader check.** After materialization:
+   ```js
+   import { loadEvidenceDirectory, applyEvidenceAvailability } from './plugins/evidence-explorer-plugin.mjs'
+   const result = applyEvidenceAvailability(loadEvidenceDirectory('evidence'), 'available')
+   if (!['loaded', 'loaded_zero_findings'].includes(result.status)) throw new Error(result.status)
+   if (result.diagnostics.rejected.length) throw new Error('rejected evidence packages')
    ```
-   If any file is missing, undersized, or malformed, re-run the split
-   (don't proceed with empty placeholders — the evidence-explorer widget
-   will load nothing).
+   A `partial_loading` result is also a failure: repair or remove the invalid
+   package rather than treating an incomplete database as a valid build.
 
 3. **MyST build smoke test.** `myst build --html` MUST exit 0 and emit
    the rendered widgets in `_build/html/`. Grep the rendered HTML for
@@ -736,7 +729,7 @@ before handing off to the validator. Treat these as a hard gate:
    invoked at the markdown layer.
 
 These three checks correspond to validator checks `PLUGIN_DIRECTIVES_INVOKED`
-(#21), `EVIDENCE_PACKAGES_POPULATED` (#22), and the existing build/structural
+(#21), `EVIDENCE_PACKAGES_LOADABLE` / `EVIDENCE_EXPLORER_CONTRACT`, and the existing build/structural
 checks. Running them at Phase 14 before validator handoff catches the
 silent-render condition where a plugin loads but no markdown invokes it.
 
@@ -1131,5 +1124,3 @@ The MyST markdown files in `content/` are the **primary** output — they render
 ---
 
 ---
-
-

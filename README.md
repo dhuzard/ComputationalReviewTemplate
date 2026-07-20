@@ -131,10 +131,12 @@ interpreted by the generic template. See [the compatibility-report contract](doc
 
 `test/fixtures/myst-golden` covers citations, bibliography, figures, tables,
 cross-references, admonitions, mathematics, margin content, custom directives,
-and the Evidence Explorer directive. Run structural checks with `node --test
-test/*.test.mjs`; add `MYST_GOLDEN_BUILD=1` to also build and inspect the
-fixture's rendered HTML. The fixture deliberately avoids TRUST and claim-graph
-semantics.
+and the Evidence Explorer directive using the production plugin and widget.
+Install the pinned CLI with `npm install --global mystmd@1.10.1`, then run
+`node --test test/*.test.mjs`. The suite always builds an isolated fixture and
+inspects its rendered HTML and MyST document data; set `MYST_COMMAND` only when
+the CLI is installed under a non-standard executable name. The fixture
+deliberately avoids TRUST and claim-graph semantics.
 
 ### Evidence Parameters
 

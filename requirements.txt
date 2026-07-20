@@ -1,6 +1,7 @@
-mystmd
-matplotlib
-numpy
-pandas
-seaborn
-jupyter
+# Reproducibility-notebook environment. The MyST CLI is the pinned npm package
+# installed by CI and deployment workflows, not the similarly named PyPI tool.
+matplotlib==3.10.3
+numpy==2.2.6
+pandas==2.3.1
+seaborn==0.13.2
+jupyter==1.1.1

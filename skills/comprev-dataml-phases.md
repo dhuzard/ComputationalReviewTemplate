@@ -688,9 +688,13 @@ Phase 14 MUST also:
   The Phase-14 actor MUST import the explorer loader and record its discovered,
   loaded, and rejected file lists in `gate_assembly.json`. It MUST also write
   `provenance/review_compatibility_report.json` following
-  `provenance/review_compatibility_report.template.json`: article and citation
+  `provenance/review_compatibility_report.schema.json`: article and citation
   levels come from the build gates, evidence-package level comes from the loader,
-  and any claim graph is reported only as an optional extension.
+  and any claim graph is reported only as an optional extension. Generate it from
+  the phase determinations with
+  `node scripts/review-compatibility-report.mjs generate <determinations.json>
+  provenance/review_compatibility_report.json`; a non-zero exit is a hard Phase-14
+  failure.
 a) Create `content/evidence_database.md` with an `:::{evidence-explorer}` directive.
    Use `:availability: available` only when the loader has at least one compatible
    package. A review deliberately published without an evidence database MUST use
@@ -896,6 +900,11 @@ Apply fixes in **reverse document order** (last occurrence first) to prevent off
      citation without cleaning up the dependent prose. Send the affected lines back
      to the Phase 18 agent via `send_message` for sentence-level repair before
      proceeding to Phase 20.
+   - Refresh `provenance/review_compatibility_report.json` from the final build,
+     citation, and loader determinations with
+     `node scripts/review-compatibility-report.mjs generate <determinations.json>
+     provenance/review_compatibility_report.json`. A contradictory or invalid
+     report is a hard Phase-19 failure.
 6. **Save** final `.tex` and `.bib` files.
 
 
@@ -1044,21 +1053,25 @@ for bulk uploads — it can push wrong file contents to multiple paths).
 
 **Push protocol:**
 1. `git clone` the repository
-2. `git rm -r` ONLY the pipeline output directories: content/, figures/, evidence/, 
-   provenance/, latex/, scripts/
+2. `git rm -r` ONLY the pipeline output directories: content/, figures/, evidence/,
+   provenance/, latex/, and generated files under scripts/. Preserve the scaffold's
+   `scripts/review-compatibility-report.mjs` validator.
 3. Copy pipeline artifacts to their correct paths using `shutil.copy2` with 
    `{{artifact:VID}}` markers (which resolve correctly at execution time)
 4. **Preserve** all pre-existing repo files: .github/, myst.yml, authors.yml, 
    00_frontmatter.md, authorship-widget.*, authorship-plugin.mjs, deploy.yml, 
    LICENSE, README.md, skills/, evidence-explorer-*
+   and `scripts/review-compatibility-report.mjs`
 5. **Verify file signatures** after copy:
    - Every .png: first 8 bytes match PNG magic (89 50 4E 47 0D 0A 1A 0A)
    - Every .tex: first non-empty line starts with `%` or `\\`
    - Every .bib: contains `@article` or `@misc`
    - Every .md: first non-empty line starts with `#` or `---`
    - If ANY signature check fails → abort push, report which files are wrong
-6. `git add -A && git commit && git push`
-7. Save gate_repository_push.json with file counts and signature check results
+6. Run `node scripts/review-compatibility-report.mjs validate
+   provenance/review_compatibility_report.json`; abort the push on any error.
+7. `git add -A && git commit && git push`
+8. Save gate_repository_push.json with file counts and signature check results
 
 **GATE ARTIFACT:** After all files are pushed:
 
@@ -1085,6 +1098,8 @@ After `git push`, verify:
 a) `myst.yml` `project.toc` entry count matches the number of `.md` files in `content/`
 b) `site.nav` structure is preserved from the repo scaffold (do not restructure existing nav)
 c) Install mystmd (`npm install -g mystmd`) and run `myst build --html`. Assert zero "Could not link citation" and zero "Cannot find image" errors. This is MANDATORY, not optional.
+d) Run the compatibility-report validator in the fresh clone so the checked
+   artifact, not a pre-copy workspace file, is the one accepted.
 
 
 ## Repository Structure

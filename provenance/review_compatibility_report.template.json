@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "ISO-8601 timestamp",
+  "generated_at": "2026-01-01T00:00:00.000Z",
   "validator_version": "template version or release commit",
   "article_renderable": { "status": "pass", "evidence": ["myst build --html"] },
   "citation_aware": { "status": "pass", "evidence": ["BIB_CITE_KEYS_RESOLVE"] },

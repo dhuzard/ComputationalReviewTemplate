@@ -1,0 +1,12 @@
+version: 1
+project:
+  title: MyST compatibility fixture
+  bibliography:
+    - content/references.bib
+  plugins:
+    - plugins/evidence-explorer-plugin.mjs
+    - plugins/test-directive-plugin.mjs
+  toc:
+    - file: content/fixture.md
+site:
+  template: book-theme

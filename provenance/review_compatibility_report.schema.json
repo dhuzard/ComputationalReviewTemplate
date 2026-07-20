@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dhuzard/ComputationalReviewTemplate/blob/main/provenance/review_compatibility_report.schema.json",
+  "title": "Computational review compatibility report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "validator_version",
+    "article_renderable",
+    "citation_aware",
+    "evidence_package_aware"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "validator_version": { "$ref": "#/$defs/nonEmptyString" },
+    "article_renderable": { "$ref": "#/$defs/evidencedLevel" },
+    "citation_aware": { "$ref": "#/$defs/evidencedLevel" },
+    "evidence_package_aware": { "$ref": "#/$defs/evidencePackageLevel" },
+    "claim_graph_aware": { "$ref": "#/$defs/claimGraphLevel" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "not_provided", "not_applicable"]
+    },
+    "evidencedLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        }
+      },
+      "if": { "properties": { "status": { "enum": ["pass", "fail"] } } },
+      "then": { "properties": { "evidence": { "minItems": 1 } } }
+    },
+    "loadedDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "compatibility"],
+      "properties": {
+        "file": { "$ref": "#/$defs/nonEmptyString" },
+        "compatibility": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "rejectedDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "reason"],
+      "properties": {
+        "file": { "$ref": "#/$defs/nonEmptyString" },
+        "reason": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "loaderDiagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["discovered", "loaded", "rejected"],
+      "properties": {
+        "discovered": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "loaded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/loadedDiagnostic" }
+        },
+        "rejected": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rejectedDiagnostic" }
+        }
+      }
+    },
+    "evidencePackageLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "availability", "package_schema_versions", "loader_diagnostics"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "availability": { "enum": ["available", "not_provided"] },
+        "package_schema_versions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "uniqueItems": true
+        },
+        "loader_diagnostics": { "$ref": "#/$defs/loaderDiagnostics" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "pass" } } },
+          "then": {
+            "properties": {
+              "availability": { "const": "available" },
+              "package_schema_versions": { "minItems": 1 },
+              "loader_diagnostics": {
+                "properties": {
+                  "discovered": { "minItems": 1 },
+                  "loaded": { "minItems": 1 },
+                  "rejected": { "maxItems": 0 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "not_provided" } } },
+          "then": {
+            "properties": {
+              "availability": { "const": "not_provided" },
+              "package_schema_versions": { "maxItems": 0 },
+              "loader_diagnostics": {
+                "properties": {
+                  "discovered": { "maxItems": 0 },
+                  "loaded": { "maxItems": 0 },
+                  "rejected": { "maxItems": 0 }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "claimGraphExtension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "validation_status"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "validation_status": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "claimGraphLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "extensions"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "extensions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/claimGraphExtension" }
+        }
+      },
+      "if": { "properties": { "status": { "const": "pass" } } },
+      "then": { "properties": { "extensions": { "minItems": 1 } } }
+    }
+  }
+}

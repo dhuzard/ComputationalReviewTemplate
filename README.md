@@ -127,6 +127,17 @@ citation resolution, evidence-package loading, and the presence of optional
 extensions such as claim graphs. Claim graphs are reported, never required or
 interpreted by the generic template. See [the compatibility-report contract](docs/evidence-compatibility.md).
 
+## Generic MyST fixtures
+
+`test/fixtures/myst-golden` covers citations, bibliography, figures, tables,
+cross-references, admonitions, mathematics, margin content, custom directives,
+and the Evidence Explorer directive using the production plugin and widget.
+Install the pinned CLI with `npm install --global mystmd@1.10.1`, then run
+`node --test test/*.test.mjs`. The suite always builds an isolated fixture and
+inspects its rendered HTML and MyST document data; set `MYST_COMMAND` only when
+the CLI is installed under a non-standard executable name. The fixture
+deliberately avoids TRUST and claim-graph semantics.
+
 ### Evidence Parameters
 
 The pipeline's evidence-gathering depth is user-configurable via the prompt. Phase 1 extracts these from your review request:

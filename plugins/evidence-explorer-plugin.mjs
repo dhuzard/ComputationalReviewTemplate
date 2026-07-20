@@ -3,7 +3,7 @@
 // The explorer consumes the versioned contract in evidence/schema. Older
 // per-section packages are adapted at this single boundary; the widget never
 // needs to guess which historical producer created a package.
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve, dirname, basename } from 'node:path';
 
 export const EVIDENCE_SCHEMA_VERSION = '1.0.0';
@@ -30,6 +30,8 @@ const evidenceDirective = {
 function asArray(value) { return Array.isArray(value) ? value : []; }
 function integer(value) { return Number.isInteger(value) && value >= 0; }
 function text(value) { return typeof value === 'string' && value.trim().length > 0; }
+function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function hasOwn(value, property) { return Object.prototype.hasOwnProperty.call(value, property); }
 
 /**
  * Validate the current contract without adding a runtime JSON-schema package.
@@ -37,11 +39,11 @@ function text(value) { return typeof value === 'string' && value.trim().length >
  */
 export function validateCanonicalPackage(value) {
   const errors = [];
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return ['package must be an object'];
+  if (!object(value)) return ['package must be an object'];
   if (value.evidence_package_schema_version !== EVIDENCE_SCHEMA_VERSION) {
     errors.push(`evidence_package_schema_version must be ${EVIDENCE_SCHEMA_VERSION}`);
   }
-  if (!value.section || typeof value.section !== 'object') errors.push('section is required');
+  if (!object(value.section)) errors.push('section must be an object');
   else {
     if (!integer(value.section.order)) errors.push('section.order must be a non-negative integer');
     if (!text(value.section.id)) errors.push('section.id must be a non-empty string');
@@ -50,13 +52,28 @@ export function validateCanonicalPackage(value) {
   for (const field of ['findings', 'conflicts', 'figure_data', 'evidence_gaps']) {
     if (!Array.isArray(value[field])) errors.push(`${field} must be an array`);
   }
-  if (!value.provenance || typeof value.provenance !== 'object') errors.push('provenance is required');
+  if (hasOwn(value, 'replication') && !object(value.replication)) errors.push('replication must be an object');
+  if (!object(value.provenance)) errors.push('provenance must be an object');
   for (const [index, finding] of asArray(value.findings).entries()) {
-    if (!finding || typeof finding !== 'object' || Array.isArray(finding)) { errors.push(`findings[${index}] must be an object`); continue; }
+    if (!object(finding)) { errors.push(`findings[${index}] must be an object`); continue; }
     if (!text(finding.claim)) errors.push(`findings[${index}].claim must be a non-empty string`);
-    if (!asArray(finding.sources).length) errors.push(`findings[${index}].sources must contain a source`);
+    if (!Array.isArray(finding.sources)) errors.push(`findings[${index}].sources must be an array`);
+    else if (!finding.sources.length) errors.push(`findings[${index}].sources must contain a source`);
     for (const [sourceIndex, source] of asArray(finding.sources).entries()) {
-      if (!source || typeof source !== 'object' || !text(source.source_id)) errors.push(`findings[${index}].sources[${sourceIndex}].source_id is required`);
+      const sourcePath = `findings[${index}].sources[${sourceIndex}]`;
+      if (!object(source)) { errors.push(`${sourcePath} must be an object`); continue; }
+      if (!text(source.source_id)) errors.push(`${sourcePath}.source_id must be a non-empty string`);
+      if (hasOwn(source, 'doi') && typeof source.doi !== 'string') errors.push(`${sourcePath}.doi must be a string`);
+      if (hasOwn(source, 'supporting_passages') && !Array.isArray(source.supporting_passages)) {
+        errors.push(`${sourcePath}.supporting_passages must be an array`);
+        continue;
+      }
+      for (const [passageIndex, passage] of asArray(source.supporting_passages).entries()) {
+        const passagePath = `${sourcePath}.supporting_passages[${passageIndex}]`;
+        if (!object(passage)) { errors.push(`${passagePath} must be an object`); continue; }
+        if (typeof passage.text !== 'string') errors.push(`${passagePath}.text must be a string`);
+        if (hasOwn(passage, 'locator') && typeof passage.locator !== 'string') errors.push(`${passagePath}.locator must be a string`);
+      }
     }
   }
   return errors;
@@ -73,7 +90,11 @@ function legacyFinding(finding, index) {
   const source = { source_id: sourceId };
   if (text(finding.doi)) source.doi = finding.doi;
   const passage = finding.claim_source_sentence || finding.supporting_passage;
-  if (text(passage)) source.supporting_passages = [{ text: passage, locator: finding.locator || undefined }];
+  if (text(passage)) {
+    const supportingPassage = { text: passage };
+    if (text(finding.locator)) supportingPassage.locator = finding.locator;
+    source.supporting_passages = [supportingPassage];
+  }
   return { ...finding, sources: [source] };
 }
 
@@ -84,7 +105,10 @@ export function adaptEvidencePackage(raw, { filename = 'package.json' } = {}) {
     if (errors.length) throw new Error(errors.join('; '));
     return { package: raw, compatibility: 'canonical-v1' };
   }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('legacy package must be an object');
+  if (object(raw) && hasOwn(raw, 'evidence_package_schema_version')) {
+    throw new Error(`unsupported evidence_package_schema_version: ${String(raw.evidence_package_schema_version)}`);
+  }
+  if (!object(raw)) throw new Error('legacy package must be an object');
   const match = filename.match(/(\d+)/);
   const order = Number(raw.section_id ?? match?.[1]);
   if (!integer(order)) throw new Error('legacy package requires numeric section_id or a section filename');
@@ -122,9 +146,22 @@ export function discoverEvidenceFiles(evidenceDir) {
     try {
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
       if (manifest?.schema_version !== 1 || !Array.isArray(manifest.packages)) throw new Error('manifest requires schema_version: 1 and packages[]');
+      const files = new Set();
+      const orders = new Set();
+      const realEvidenceDir = realpathSync(evidenceDir);
       const entries = manifest.packages.map((entry, index) => {
-        if (!text(entry?.file) || entry.file !== basename(entry.file) || !entry.file.endsWith('.json') || !integer(entry?.order)) {
+        if (!object(entry) || !text(entry.file) || entry.file !== basename(entry.file) || !/^[^/\\]+\.json$/.test(entry.file) || !integer(entry.order)) {
           throw new Error(`manifest.packages[${index}] requires a local JSON file and non-negative order`);
+        }
+        if (files.has(entry.file)) throw new Error(`manifest.packages[${index}].file duplicates ${entry.file}`);
+        if (orders.has(entry.order)) throw new Error(`manifest.packages[${index}].order duplicates ${entry.order}`);
+        files.add(entry.file);
+        orders.add(entry.order);
+        const packagePath = resolve(realEvidenceDir, entry.file);
+        if (!existsSync(packagePath)) throw new Error(`manifest.packages[${index}].file does not exist: ${entry.file}`);
+        const realPackagePath = realpathSync(packagePath);
+        if (dirname(realPackagePath) !== realEvidenceDir || !statSync(realPackagePath).isFile()) {
+          throw new Error(`manifest.packages[${index}].file must resolve to a file inside the evidence directory`);
         }
         return { file: entry.file, order: entry.order, compatibility: 'manifest' };
       });
@@ -153,11 +190,15 @@ export function loadEvidenceDirectory(evidenceDir) {
   const discovery = discoverEvidenceFiles(evidenceDir);
   const loaded = [];
   const rejected = [];
+  const sectionOrders = new Map();
   for (const entry of discovery.entries) {
     const path = resolve(evidenceDir, entry.file);
     try {
       const raw = JSON.parse(readFileSync(path, 'utf-8'));
       const adapted = adaptEvidencePackage(raw, { filename: basename(path) });
+      const duplicate = sectionOrders.get(adapted.package.section.order);
+      if (duplicate) throw new Error(`section.order ${adapted.package.section.order} duplicates ${duplicate}`);
+      sectionOrders.set(adapted.package.section.order, entry.file);
       loaded.push({ ...entry, ...adapted });
     } catch (error) { rejected.push({ file: entry.file, reason: error.message }); }
   }

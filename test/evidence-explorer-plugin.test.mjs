@@ -212,3 +212,31 @@ test('declared-available failures raise EvidenceLoadError and are never downgrad
     assert.equal(node.type, 'evidence-explorer');
   } finally { cleanup(path); }
 });
+
+function inMemoryLoad(orders) {
+  const discovered = orders.map(order => `evidence_section_${order}.json`);
+  return { status: 'loaded', discovery_mode: 'pattern', packages: discovered.map(() => ({})), diagnostics: { discovered, rejected: [] } };
+}
+
+test('gap warnings stay bounded for unsafe and very sparse section orders', { timeout: 5000 }, () => {
+  // 2^53 and 2^53 + 2: the old loop did `order += 1` from 2^53 and never terminated.
+  const unsafe = evidenceLoadWarnings(inMemoryLoad(['9007199254740992', '9007199254740994']));
+  assert.equal(unsafe.length, 1);
+  assert.match(unsafe[0], /2 evidence file\(s\).*beyond 9007199254740991.*not checked for gaps/);
+  assert.doesNotMatch(unsafe[0], /no evidence file/);
+
+  // Safe but astronomically sparse: truncated list plus an exact count, not the span.
+  const sparse = evidenceLoadWarnings(inMemoryLoad(['01', '9007199254740991'])).join('\n');
+  assert.match(sparse, /no evidence file for section\(s\) 02, 03, 04/);
+  assert.match(sparse, / and 9007199254740969 more/);
+  assert.ok(sparse.length < 400, 'output is capped');
+
+  // Safe orders next to unsafe ones still report their own gaps.
+  const mixed = evidenceLoadWarnings(inMemoryLoad(['01', '03', '9007199254740993'])).join('\n');
+  assert.match(mixed, /section\(s\) 02; the explorer is incomplete/);
+  assert.match(mixed, /beyond 9007199254740991/);
+
+  // Small gaps are still listed in full, and contiguous runs stay silent.
+  assert.match(evidenceLoadWarnings(inMemoryLoad(['01', '05'])).join('\n'), /section\(s\) 02, 03, 04;/);
+  assert.deepEqual(evidenceLoadWarnings(inMemoryLoad(['01', '02', '03'])), []);
+});

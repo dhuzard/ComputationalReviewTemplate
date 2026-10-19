@@ -24,14 +24,14 @@
     {
       "name": "comprev-dataml-phases",
       "file": "skills/comprev-dataml-phases.md",
-      "bytes": 65307,
-      "sha256": "2fd94d60b6db850485326ecd0304db976795e7bb177fc42b665eec2980b7b827"
+      "bytes": 65622,
+      "sha256": "9ab7cb4385fa1674f5eaafc8f632388b43864d11fc617a6bcf711b9f4404c737"
     },
     {
       "name": "comprev-deploy-polish",
       "file": "skills/comprev-deploy-polish.md",
-      "bytes": 14001,
-      "sha256": "baf77ac91cfb7dc00b33401614b591a2922d6d647f5ba7b8ceb5033a76311e93"
+      "bytes": 13361,
+      "sha256": "4af7871cf76a4dfbf41d0f94b59d193c655809c608b823c2dfc7d8702591f603"
     },
     {
       "name": "comprev-evidence-gathering",
@@ -78,8 +78,8 @@
     {
       "name": "comprev-orchestrator",
       "file": "skills/comprev-orchestrator.md",
-      "bytes": 46125,
-      "sha256": "1af885f8b52e18439b1e372488493f2df12177fcc9c1abae53a71637a161be13"
+      "bytes": 47129,
+      "sha256": "a67cd80235de72fe5f22efe99ab032704abfdbf2319a518b375bd2a7e7a5a00b"
     },
     {
       "name": "comprev-reviewer-agent",

@@ -84,6 +84,19 @@ which comprev-* skills it must NOT read or search for.
 `host.artifacts` runs in the `python` tool). Repository writes use `git push` with the
 GitHub credential declared on the cell, never the Contents API.
 
+**Frame ledger bridge.** `host.frames` exists only in the `repl` tool; Python cells cannot
+call it. Anything in Python that needs the frame ledger (Phase 13 M.6 snapshot, Phase 20a
+refresh, `METHODS_LEDGER_FRESH` at 20V) reads a file instead. Before delegating those
+tasks, the coordinator calls `host.frames` in the `repl` with the arguments the ledger
+consumers need (`project_id`, `roots_only=False`, `has_task=False`, `max_results=500`,
+in the `repl`'s own call syntax), writes the result unmodified as JSON to
+`provenance/frames_ledger.json` (a write followed by `save_artifacts`, exactly as for gate
+JSON; see Save-after-write race), and names that artifact in the task. Python then calls
+`load_frames()` from `scripts/frames_ledger.py`, which returns the `frames` list and fails
+loudly when the file is missing. Never write `host.frames(...)` inside a Python cell. The
+coordinator re-serialises the ledger at each refresh, so a stale file is a coordinator
+error, not something Python can detect.
+
 **Model identity.** Methods text must name the exact model id the coordinator is running
 on (from its own system context); pass it to the Phase 13 and 20a DATAML tasks as
 `MODEL_ID`. Do not hardcode a model name.

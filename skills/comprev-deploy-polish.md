@@ -158,65 +158,7 @@ On any FAIL, the validator emits a structured fix-list keyed by check:
 
 ## Canonical `deploy.yml`
 
-Phase 20 push must guarantee the repository ships with a deploy workflow that builds the MyST site and uploads to GitHub Pages without re-executing figure notebooks. PNGs are committed to the repository as the canonical figure render; the `.ipynb` files accompany them as reproducibility artifacts only. Use this workflow verbatim (modulo project-specific Python versions and extra `pip install` packages from your reproducibility requirements):
-
-```yaml
-name: Deploy MyST site
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-
-      - uses: actions/setup-node@v4
-        with: { node-version: "18" }
-
-      - name: Install dependencies
-        run: |
-          pip install mystmd
-          npm install -g mystmd
-          npm install yaml
-
-      - name: Skip figure-notebook execution (PNGs already committed)
-        run: |
-          echo "Figure notebooks ship as reproducibility artifacts only."
-          echo "Committed PNGs:"; ls figures/*.png | wc -l
-
-      - name: Build MyST site
-        run: myst build --html
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with: { path: _build/html }
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-```
+Phase 20 push must guarantee the repository ships with a deploy workflow that builds the MyST site and uploads to GitHub Pages without re-executing figure notebooks. PNGs are committed to the repository as the canonical figure render; the `.ipynb` files accompany them as reproducibility artifacts only. The checked-in `.github/workflows/deploy.yml` is the authoritative workflow; this skill does not carry a second copy. Phase 20 MUST leave it in place (it is scaffold-owned infrastructure) and MUST NOT regenerate or downgrade it from memory. It installs the pinned `mystmd` CLI, confirms the committed PNGs exist, builds with `myst build --html` under `BASE_URL`, uploads `_build/html`, and deploys with `actions/deploy-pages`. Its only per-project edit is `BASE_URL`, which must be `/<repository-name>` for the target repository; do not change action versions, the `mystmd` pin, or permissions during a review run. Add extra `pip install` packages from the reproducibility requirements only if the build needs them.
 
 **Notebook execution belongs in a separate workflow.** A `reproducibility.yml` workflow may run `jupyter execute figures/notebooks/*.ipynb --timeout=120` on a schedule or manual dispatch, with failure non-blocking for the live site. Do not couple notebook re-execution to the deploy critical path.
 

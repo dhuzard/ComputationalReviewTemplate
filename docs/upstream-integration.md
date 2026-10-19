@@ -144,6 +144,59 @@ either pre-merge plugin: 4 cases fail against the fork plugin and 11 against
 the upstream plugin. It therefore exercises the reconciliation and is not a
 weakened copy of the upstream assertions.
 
+## Independent review findings and repairs
+
+An independent review of the merge found three defects. All three are repaired
+in the working tree on top of the merge; none changes an evidence schema, the
+loader's statuses or diagnostics, availability, adapters, the widget or
+provenance.
+
+1. **Methods "Pipeline Skills" roles (regression).** `comprev-dataml-phases`
+   built each role from `splitlines()[0]`; every skill now begins with YAML
+   frontmatter, so every role became `---`. The snippet now calls
+   `scripts/skill_catalog.py`, which takes the first sentence of the
+   frontmatter `description` (falling back to the first heading outside code
+   fences, then the file stem) and escapes `|`.
+2. **Gap warning hang (correctness).** `evidenceLoadWarnings` walked every
+   integer between the lowest and highest discovered order, so orders at or
+   above 2^53 never terminated and huge safe gaps were costly. It now compares
+   adjacent sorted orders with BigInt arithmetic, lists at most 20 missing
+   orders and reports the exact remainder (`... and N more`). Orders beyond
+   `Number.MAX_SAFE_INTEGER` cannot be enumerated exactly; they are excluded
+   from gap analysis and named in a separate advisory. Warnings stay advisory,
+   and filename and manifest contracts are unchanged.
+3. **`host.frames` in Python (test gap).** The orchestrator places `host.frames`
+   in the `repl` tool while the Phase 13 and 20a examples called it from
+   Python. The orchestrator now documents a **Frame ledger bridge**: the
+   coordinator calls `host.frames` in the `repl`, writes the unmodified result
+   to `provenance/frames_ledger.json` with the existing write-then-
+   `save_artifacts` mechanism, and Python reads it through
+   `scripts/frames_ledger.py` (`load_frames`, `summarize`). No new host API is
+   assumed. Also resolved: the duplicated `deploy.yml` recipe in
+   `comprev-deploy-polish` (old action versions, unpinned `mystmd`) is replaced
+   by a pointer to the checked-in workflow, which is authoritative.
+
+Regression coverage: `test/test_python_helpers.py` (run by
+`test/python-helpers.test.mjs`) extracts and executes the documented Python
+blocks from the skill files (Methods table, Phase 13 snapshot, Phase 20a ledger
+head) against fixtures, and fails if any fenced `python` block in `skills/`
+calls `host.frames(`. `test/evidence-explorer-plugin.test.mjs` adds a
+5-second-timeout case for orders at 2^53, 2^53+2, 2^53-1 and mixed safe and
+unsafe orders; the existing `03, 04, ... 09` assertion is unchanged.
+
+Retained risks:
+
+- The bridge is untested against the real Claude Science runtime, which is not
+  installed here; tests cover the Python consumer and the file contract only.
+  Whether the `repl` can write the file directly or needs a Python or bash cell
+  to do it is left to the coordinator, as for gate JSON.
+- A stale `frames_ledger.json` cannot be detected from Python; re-serialising
+  at each refresh is a coordinator duty.
+- `comprev-myst-validator` (outside this repair's scope) still describes check
+  #20 as `len(host.frames(...)['frames'])` in prose. It is a semantic
+  description, not an example the bridge test can execute.
+- Orders beyond 2^53 are reported but never gap-checked.
+
 ## Risks
 
 - **Network-dependent build.** `myst.yml` loads

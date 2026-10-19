@@ -255,28 +255,52 @@ export function applyEvidenceAvailability(result, availability = 'available') {
 
 function padOrder(order) { return String(order).padStart(2, '0'); }
 
+const MAX_LISTED_GAPS = 20;
+
+/**
+ * Missing section orders between adjacent discovered orders, without walking the
+ * span: work and output are bounded by the number of files and MAX_LISTED_GAPS,
+ * however sparse the orders are. Orders beyond Number.MAX_SAFE_INTEGER cannot be
+ * enumerated exactly, so they are excluded from the analysis and counted.
+ */
+function orderGaps(entries) {
+  const safe = [...new Set(entries.filter(integer))].filter(Number.isSafeInteger).sort((a, b) => a - b);
+  const unsafe = new Set(entries.filter(integer)).size - safe.length;
+  const listed = [];
+  let total = 0n;
+  for (let i = 1; i < safe.length; i += 1) {
+    const missing = BigInt(safe[i]) - BigInt(safe[i - 1]) - 1n;
+    total += missing;
+    for (let order = safe[i - 1] + 1; listed.length < MAX_LISTED_GAPS && order < safe[i]; order += 1) listed.push(padOrder(order));
+  }
+  return { listed, total, unsafe };
+}
+
 /**
  * Advisory build warnings for a bound (non-fatal) load. They never change the
  * payload: a reader may still see a partial explorer, while review gates reject
  * partial sets from the loader diagnostics. Interior gaps are only meaningful
  * for filename discovery; a manifest declares its packages explicitly and may
- * be deliberately non-contiguous.
+ * be deliberately non-contiguous. Long gap lists are truncated with a count.
  */
 export function evidenceLoadWarnings(result, { sectionCount = 0, evidenceDir = 'evidence directory' } = {}) {
   if (result.status === 'not_provided') return [];
   const warnings = [];
-  const gaps = [];
+  let gaps = { listed: [], total: 0n, unsafe: 0 };
   if (result.discovery_mode === 'pattern') {
-    const orders = [...new Set(result.diagnostics.discovered.map(file => patternEntry(file)?.order).filter(integer))].sort((a, b) => a - b);
-    for (let order = orders[0]; order < orders[orders.length - 1]; order += 1) {
-      if (!orders.includes(order)) gaps.push(padOrder(order));
-    }
+    gaps = orderGaps(result.diagnostics.discovered.map(file => patternEntry(file)?.order));
   }
+  if (gaps.unsafe) {
+    warnings.push(`evidence-explorer: ${gaps.unsafe} evidence file(s) in ${evidenceDir} have a section order beyond ${Number.MAX_SAFE_INTEGER}; they were not checked for gaps.`);
+  }
+  const gapText = gaps.total > BigInt(gaps.listed.length)
+    ? `${gaps.listed.join(', ')} and ${gaps.total - BigInt(gaps.listed.length)} more`
+    : gaps.listed.join(', ');
   const loadedSections = result.packages.length;
-  if (gaps.length || (sectionCount && loadedSections !== sectionCount)) {
+  if (gaps.total > 0n || (sectionCount && loadedSections !== sectionCount)) {
     warnings.push(`evidence-explorer: loaded ${loadedSections} section(s) from ${evidenceDir}`
       + (sectionCount ? `, but :sections: declares ${sectionCount}` : '')
-      + (gaps.length ? `; no evidence file for section(s) ${gaps.join(', ')}` : '')
+      + (gaps.total > 0n ? `; no evidence file for section(s) ${gapText}` : '')
       + '; the explorer is incomplete.');
   }
   if (result.status === 'partial_loading') {

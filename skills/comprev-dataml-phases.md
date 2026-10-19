@@ -407,14 +407,20 @@ run including all downstream phases. Treat the Phase-13 numbers as
 provisional placeholders and do not delete the snapshot label until the
 Phase-20 refresh has overwritten the values.
 
+`host.frames` is not callable from Python: read the ledger the coordinator serialised
+(`provenance/frames_ledger.json`, see the orchestrator's Frame ledger bridge).
+
 ```python
 # Phase 13 draft-time render. Note explicit snapshot labeling.
+import sys
+sys.path.insert(0, 'scripts')
+from frames_ledger import load_frames
 methods_data = {
     'model_version': MODEL_ID,  # exact model id passed in by the coordinator; never hardcode
     'pipeline_version': json.load(open('provenance/pipeline_version.json'))['pipeline_version'],
     'snapshot_phase': 13,
     'snapshot_at': datetime.now(timezone.utc).isoformat(),
-    'total_frames': len(host.frames(project_id=PROJECT_ID, roots_only=False, has_task=False)['frames']),
+    'total_frames': len(load_frames()),
     'phases_completed_at_draft_time': [p for p, v in phase_ledger.items() if v['status'] == 'complete'],
     'wall_clock_hours_at_draft_time': (datetime.now(timezone.utc) - first_frame_at).total_seconds() / 3600,
 }
@@ -463,17 +469,16 @@ regenerates the figure from `provenance/pipeline_metrics.json`.
 **M.8 Pipeline Skills section (MANDATORY, inserted before Reproducibility Statement):**
 
 The Methods file must include a `## Pipeline Skills` subsection describing the
-twelve skill files that encode the pipeline. Build the table programmatically by
-scanning `skills/*.md` for frontmatter / first-line description:
+skill files that encode the pipeline. Build the table programmatically by
+scanning `skills/*.md` for the frontmatter description:
 
 ```python
-import pathlib, re
-rows = []
-for path in sorted(pathlib.Path("skills").glob("comprev-*.md")):
-    first = path.read_text().splitlines()[0].lstrip("# ").strip()
-    rows.append((path.name, first))
-table = "| Skill | Role |\n|---|---|\n"
-table += "\n".join(f"| `{n}` | {d} |" for n, d in rows)
+import sys
+sys.path.insert(0, "scripts")
+from skill_catalog import skill_rows, methods_table
+# Role = first sentence of each skill's frontmatter `description` (every skill
+# starts with `---`, so the first line is never a description).
+table = methods_table(skill_rows("skills"))
 ```
 
 Do NOT write the table by hand (skill names and phase ownership change across
@@ -945,7 +950,13 @@ import re, json, pathlib
 from datetime import datetime, timezone
 from collections import Counter
 
-frames = host.frames(project_id=PROJECT_ID, roots_only=False, has_task=False, max_results=500)['frames']
+import sys
+sys.path.insert(0, 'scripts')
+from frames_ledger import load_frames
+
+# The coordinator re-serialised the repl `host.frames` result to
+# provenance/frames_ledger.json before this task (orchestrator, Frame ledger bridge).
+frames = load_frames()
 agent_counts = Counter(f['agent_name'] for f in frames)
 status_counts = Counter(f['status'] for f in frames)
 first_at = min(f['created_at'] for f in frames)
@@ -972,7 +983,7 @@ m6_block = f'''## Pipeline Execution
 Claude Science agent runtime.
 
 **Frame counts and agent breakdown.** Derived from the project's `frames`
-ledger (project `{{PROJECT_ID}}`, read via `host.frames(project_id=...)`).
+ledger (project `{{PROJECT_ID}}`, serialised from the coordinator's `host.frames` call).
 Total session frames: **{sum(agent_counts.values())}**.
 
 | Agent | Frames |

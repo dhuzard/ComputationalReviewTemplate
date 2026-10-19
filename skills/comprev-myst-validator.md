@@ -1,3 +1,8 @@
+---
+name: comprev-myst-validator
+description: "Expert Review Pipeline v30 (ComputationalReviewTemplate): MyST Validator — Binary Gate for Phases 7, 14, 19, 20"
+---
+
 # MyST Validator — Binary Gate for Phases 7, 14, 19, 20
 
 **Purpose:** Validate MyST markdown syntax and build integrity.
@@ -64,7 +69,7 @@ re.findall(r"\{cite:[pt]\}[A-Za-z]", text)     # missing opening backtick AFTER 
 Any hit is a fail. Each hit converts a citation into a literal code span and breaks rendering. Report offenders as `path:line:fragment`. **pass/fail**
 
 6a. **DIRECTIVE_WHITELIST_VIOLATION** *(Phase 7V, 19V)*: Every `:::{name}` directive in
-    `content/*.md` body files matches the whitelist documented in `comprev-orchestrator-v29`
+    `content/*.md` body files matches the whitelist documented in `comprev-orchestrator`
     §Directive Whitelist (`figure`, `dropdown`, `admonition`, `warning`, `authorship-explorer`
     in frontmatter only, `evidence-explorer`). Any `:::{contents}`, `:::{toctree}`,
     `:::{include}`, or `:::{tableofcontents}` in body sections is a hard fail — the build
@@ -78,12 +83,39 @@ Any hit is a fail. Each hit converts a citation into a literal code span and bre
 
 ## Build Checks (Phase 14, 19, 20)
 
+**Phase 14V runs a real build.** It is the first gate that can, and the defects it
+catches are the expensive ones — an unresolved `:authors:` path, an unrendered
+directive, a plugin that binds nothing. 19V and Phase 21 repeat it; neither
+replaces it. A 14V gate whose build was never executed is `pass_with_deferred`
+at best, never `pass`.
+
 10. **MYSTMD_INSTALLED**: `npm install -g mystmd` succeeds? **pass/fail**
+
+    A claim that the toolchain is unavailable MUST carry the captured output of
+    the commands that establish it — `which node`, `which npm`, `node --version`,
+    `npm --version`, and the failing `npm install -g mystmd` — recorded verbatim
+    in the gate under `tool_probe`. An unsupported "node/npm not available" note
+    is not a verdict. In the reference run it was false: both were present in a
+    different conda environment than the one probed, and the claim deferred the
+    first real build by five phases. Search the environments available to the
+    session, not only the active one, and record what you ran.
 11. **BUILD_PASSES**: `myst build --html` exits with zero ⛔ errors? **pass/fail**
 12. **ZERO_CITATION_ERRORS**: Zero "Could not link citation" in output? **pass/fail**
 13. **ZERO_IMAGE_ERRORS**: Zero "Cannot find image" in output? **pass/fail**
 
-13a. **BIB_CITE_KEYS_RESOLVE** *(fallback when `myst build` cannot run)*: When the environment lacks `npm`/`mystmd` so checks 10–13 are deferred, the validator MUST run a mechanical citation-binding test in their place. Three sub-checks, all required:
+13a. **BIB_CITE_KEYS_RESOLVE** *(fallback when `myst build` cannot run)*: When the environment lacks `npm`/`mystmd` so checks 10–13 are deferred, the validator MUST run a mechanical citation-binding test in their place.
+
+     This fallback is admissible only with a `tool_probe` record (check #10). Three
+     rules bind it, and together they are the whole point of the fallback:
+
+     1. Checks 10–13 are recorded as `"deferred"`, **never** as `"pass"`. The
+        fallback substitutes for them; it does not satisfy them.
+     2. The gate verdict becomes `pass_with_deferred`, not `pass`, and lists the
+        deferred check names under `deferred_checks`.
+     3. Every later gate that *can* run a deferred check MUST run it and record
+        its own verdict. Citing the upstream fallback — or the upstream
+        `pass_with_deferred` — is forbidden. A deferred check that is never
+        re-run is an open failure, not a closed one. Three sub-checks, all required:
 
 ```python
 import yaml, re, json
@@ -153,7 +185,15 @@ Any other import is a fail. Reports offenders as `notebook:line:module`. **pass/
     `content/*.md`. Forbidden tokens (case-insensitive substring match on `name:` values
     and byline text): `Human Supervisor`, `Anonymous`, `TBD`, `[NAME]`, `<...>` template
     angle-brackets, `Author N` patterns. **pass/fail**
-19. **ALL_PLUGINS_LISTED**: myst.yml lists all 4 plugins? **pass/fail**
+19. **ALL_PLUGINS_LISTED**: every plugin the repository ships is declared in
+    `myst.yml` `project.plugins`. Derive both sides rather than asserting a count:
+    list `plugins/*.mjs` on disk, read the `project.plugins` entries, and require
+    every local file to appear among them. Remote entries (a plugin loaded from a
+    release URL) have no local file and are not expected to have one.
+
+    Do not hardcode how many plugins there are. A review may add one, and a check
+    that names a number fails a correct repository — this check asserted four
+    against a template that ships three, and had to be waived. **pass/fail**
 20. **HEADING_STYLE_CONSISTENT**: Run `audit_headings()` (defined in `comprev-critic.md`)
     across all `content/*.md` files. Zero problems of any type:
     `MANUAL_NUMBER_PREFIX`, `WRAPPED_HEADING`, `MULTI_SPACE_AFTER_NUMBER`,
@@ -171,7 +211,7 @@ Any other import is a fail. Reports offenders as `notebook:line:module`. **pass/
        `\bPhases? 1[4-9].20 \(scheduled\)`. Zero hits required.
     2. **Pipeline Execution frame count matches live ledger.** Parse the integer that
        follows `Total session frames: \*\*` in the Pipeline Execution section. Must equal
-       `len(operon.frames(project_id=PROJECT_ID, roots_only=False, has_task=False)['frames'])`
+       `len(host.frames(project_id=PROJECT_ID, roots_only=False, has_task=False)['frames'])`
        within ±1 (allow for the validator's own frame).
     3. **Pipeline Execution phases-completed wording is final.** The phrase
        "All 21 pipeline phases completed" (case-sensitive) must appear in
@@ -253,7 +293,9 @@ Any other import is a fail. Reports offenders as `notebook:line:module`. **pass/
     evidence package (`evidence/evidence_section_*.json`):
 
     - If `min_papers_per_cluster` is set and non-null: verify
-      `unique_paper_count` (or `len(set(f['doi'] for f in findings))`)
+      `unique_paper_count` (or the number of distinct sources across
+      `findings[].sources[]`, keyed by `doi` when present and `source_id`
+      otherwise)
       ≥ `min_papers_per_cluster`. **HARD FAIL** if any cluster is below.
     - If `saturation_criterion` is set and non-null: verify that a
       `saturation_log.json` artifact exists for each cluster AND that the
@@ -266,6 +308,78 @@ Any other import is a fail. Reports offenders as `notebook:line:module`. **pass/
       fields are null/default: emit `"EVIDENCE_PARAMETERS_HONORED": "n/a"`
       with reason "no custom evidence parameters set".
 
+26. **PLUGIN_PAYLOAD_MATCHES_SOURCE** *(Phase 14V, 19V, 20V)*: For every
+    plugin that reads files at build time (a `stage: 'document'` transform
+    that calls `readFileSync`), run that transform over each `content/*.md`
+    page invoking its directive and compare the **bound payload** with the
+    packages the loader selects. For `evidence-explorer`, the expected side
+    is the loader's own selection, not a raw filename glob: run
+    `loadEvidenceDirectory('evidence')` and `applyEvidenceAvailability(result,
+    <declared :availability:>)` from `plugins/evidence-explorer-plugin.mjs`,
+    which honours `evidence/manifest.json` when present and otherwise the
+    documented filename patterns, and adapts legacy packages through the
+    bounded compatibility adapter. The payload's `sections`, `findings`,
+    `conflicts` and `figure_data` lengths MUST equal the number of loaded
+    (manifest-selected or pattern-discovered, adapted) packages and the summed
+    lengths of those arrays across them; every entry of `findings` MUST be an
+    object carrying `sources[]`, and `evidence_status` / `diagnostics` MUST
+    equal the loader result. A valid package set whose findings are all empty
+    (`loaded_zero_findings`) matches with zero findings and passes. When the
+    page declares `:availability: not_provided`, the expected payload is the
+    explicit empty state: status `not_provided` and four empty arrays.
+
+    Require **equality, not non-emptiness**. A bind that drops three of
+    twelve sections passes any non-empty test while publishing an incomplete
+    explorer, and `argument_groups.*.supporting_findings` holds cite-key
+    *strings*, so a payload can be non-empty and still hold no findings.
+
+    This is the check that was missing: at 14V the pipeline previously
+    confirmed only that the directive was invoked (#21) and that the packages
+    were populated, both of which passed while the Evidence Database page
+    published empty. #15a and #22 establish that the packages load and obey
+    the contract; this check establishes that what loaded is what was bound. The equivalent Phase 21 check (`PLUGIN_DATA_BOUND`
+    in `comprev-deploy-polish`) runs after deployment and is a re-check, not
+    the first line of defence. No `myst build` is required — invoke the
+    transform directly, which is what makes this affordable at 14V.
+    **HARD FAIL** on any mismatch.
+
+27. **DATA_PLUGIN_NEGATIVE_TEST** *(Phase 14V, 19V, 20V)*: Every
+    file-reading plugin MUST ship an executable test, and the validator MUST
+    run it and require exit status 0. For this template:
+    `node scripts/test_evidence_explorer.mjs` and `node --test
+    test/evidence-explorer-plugin.test.mjs`.
+
+    The test MUST cover both directions of emptiness, because fixing one
+    produced the other within a day:
+
+    1. An Evidence Database declared `:availability: not_provided` renders the
+       explicit empty state and the build survives — an un-instantiated
+       template is declared, not inferred from an empty directory.
+    2. A database declared `available` whose directory is missing or empty,
+       holds input files the plugin matches to **nothing**, or holds only
+       packages it cannot read or validate, **fails the build** rather than
+       publishing an empty widget.
+
+    A suite that cannot fail is not evidence. Confirm it detects a real
+    regression by running it against the last known-bad plugin revision
+    before trusting a pass. **pass/fail**.
+
+28. **REVIEW_COMPATIBILITY_REPORT_VALID** *(Phase 14V, 19V, 20V)*: Run
+    `node scripts/review-compatibility-report.mjs validate
+    provenance/review_compatibility_report.json` against the exact artifact
+    the phase produced (14V: the report Phase 14 generated; 19V: the report
+    refreshed after fixes; 20V: the report in the pushed commit) and require
+    exit status 0. Then cross-check it against this gate's own results: an
+    `evidence_package_aware` `pass` requires `availability: available`, at
+    least one package schema version, non-empty `discovered` and `loaded`
+    loader diagnostics and zero `rejected`, all equal to the #15a loader
+    result; `not_provided` requires the explicit empty state and agreement
+    with #15. `claim_graph_aware` is reported verbatim and is never required.
+    A missing report, a non-zero exit, or a report that contradicts the
+    loader result is a **HARD FAIL**. The template's
+    `provenance/review_compatibility_report.template.json` is an example, not
+    a review's report. **pass/fail**
+
 ## Output Schema
 
 The validator's gate JSON (e.g. `gate_sections_drafted.json` at 7V, `gate_assembly.json` at 14V, `gate_repository_push.json` at 20V — and the in-memory return value at 19V, which has no named gate file) MUST be a single JSON object containing — at minimum — these keys:
@@ -273,7 +387,9 @@ The validator's gate JSON (e.g. `gate_sections_drafted.json` at 7V, `gate_assemb
 ```json
 {
   "phase": 7|14|19|20,
-  "gate": "pass|fail",
+  "gate": "pass|pass_with_deferred|fail",
+  "deferred_checks": [],
+  "tool_probe": {},
   "per_file_results": {...},
   "build_result": {"myst_errors": int, "myst_warnings": int},
   "structural_results": {
@@ -292,6 +408,9 @@ The validator's gate JSON (e.g. `gate_sections_drafted.json` at 7V, `gate_assemb
     "NO_WRITER_SCRATCHPAD": "pass|fail",
     "CITE_DIRECTIVE_SYNTAX_CLEAN": "pass|fail",
     "PLUGIN_DIRECTIVES_INVOKED": "pass|fail",
+    "PLUGIN_PAYLOAD_MATCHES_SOURCE": "pass|fail",
+    "DATA_PLUGIN_NEGATIVE_TEST": "pass|fail",
+    "REVIEW_COMPATIBILITY_REPORT_VALID": "pass|fail",
     "FIGURE_WIDTH_DECLARED": "pass|fail",
     "BIB_CITE_KEYS_RESOLVE": "pass|fail|n/a",
     "EVIDENCE_PARAMETERS_HONORED": "pass|fail|n/a",

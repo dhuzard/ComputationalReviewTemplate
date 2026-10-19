@@ -1,6 +1,6 @@
 ---
 name: comprev-deploy-polish
-description: Phase 21 (post-deployment) UX validation skill. Runs after Phase 20 push to main confirms green build. Catches deployment-class defects (per-page rendering, plugin data-binding, figure dropdown completeness, link health, asset paths, frontmatter visibility) that compile-time checks miss. Loaded by a DATAML validator sub-frame; produces gate_phase21_deploy_polish.json and (on FAIL) a structured fix-list returned to coordinator. Coordinator opens at most one targeted fix-loop iteration before final user sign-off.
+description: "Expert Review Pipeline v30 (ComputationalReviewTemplate): Deploy Polish — Phase 21 (post-deployment) UX validation skill. Runs after Phase 20 push to main confirms green build. Catches deployment-class defects (per-page rendering, plugin data-binding, figure dropdown completeness, link health, asset paths, frontmatter visibility) that compile-time checks miss. Loaded by a DATAML validator sub-frame; produces gate_phase21_deploy_polish.json and (on FAIL) a structured fix-list returned to coordinator. Coordinator opens at most one targeted fix-loop iteration before final user sign-off."
 ---
 
 # Deploy Polish — Phase 21 Post-Deployment UX Validation
@@ -80,8 +80,9 @@ live URL needed) or **Tier B** (requires `DEPLOY_ACCESSIBLE=true`).
 | `FIGURE_ASSETS_RESOLVE` | A | Every `<img src=...>` in the deployed HTML resolves to a file present in the built-artifact tarball (relative paths) or returns HTTP 200 (absolute URLs, only if Tier B available). | All image paths/URLs resolve |
 | `INTERNAL_LINK_HEALTH` | A | Every internal anchor (`#section-id`, cross-section links, `[[wikilink]]` resolutions) resolves to an existing page or anchor in the built-artifact tarball. | Zero broken internal links |
 | `EXTERNAL_LINK_HEALTH` | B | Every external `https?://` link in deployed HTML returns 2xx or 3xx (HEAD request, 10s timeout, 1 retry). Soft-fail allowed for known-rate-limited domains (configurable). | ≤2% failure rate excluding allowlisted domains |
-| `PLUGIN_DATA_BOUND` | A | If MyST plugins (figure-index, citation-index, glossary) declare data bindings in `myst.yml`, each binding resolves to non-empty data in the built-artifact tarball (rendered HTML inspection). | All declared plugins emit non-empty data |
+| `PLUGIN_DATA_BOUND` | A | Deployed re-check of `PLUGIN_PAYLOAD_MATCHES_SOURCE` (`comprev-myst-validator` #26), which is the first line of defence at 14V. Every file-reading plugin's binding resolves in the built-artifact tarball to data **equal to** its source — for `evidence-explorer`, the section/finding/conflict/figure_data counts, `evidence_status` and `diagnostics` equal the loader result (`loadEvidenceDirectory` + `applyEvidenceAvailability` from the deployed plugin: manifest-selected or pattern-discovered packages after compatibility adaptation), not a raw `evidence/evidence_section_*.json` glob. Non-emptiness alone is insufficient: a partial bind passes it. A valid package set with zero findings binds zero findings and passes; a `not_provided` declaration binds the explicit empty payload. | Counts equal loader result; zero declared-available plugins binding empty |
 | `EVIDENCE_EXPLORER_STATUS_RENDERED` | A | Inspect the built Evidence Database page. It must contain the explorer widget and, when the source declares `not_provided`, a truthful no-database status; when it declares `available`, it must not contain unavailable/invalid diagnostics. Cross-check the rendered status against the loader result recorded in the assembly gate. | Rendered status and gate result agree |
+| `REVIEW_COMPATIBILITY_REPORT_VALID` | A | Run `node scripts/review-compatibility-report.mjs validate provenance/review_compatibility_report.json` against the report in the deployed commit and require exit status 0. Its `evidence_package_aware` status, availability and loader diagnostics must agree with `PLUGIN_DATA_BOUND` and `EVIDENCE_EXPLORER_STATUS_RENDERED`; `claim_graph_aware` is reported verbatim and never required. | Exit 0 and no contradiction with the rendered explorer |
 | `DIRECTIVE_RENDERED_OK` | A | No section page contains an unrendered MyST directive (regex `\{[a-z]+\}` followed by directive syntax, in built HTML body). | Zero unrendered directives |
 | `FORBIDDEN_LEXICON_DEPLOYED` | A | Re-run the `FORBIDDEN_LEXICON` glob against the rendered HTML (not just source). Catches cases where the build copied through a stale render. | Zero hits |
 | `AUTHOR_IDENTITY_DEPLOYED` | A | Re-run `AUTHOR_IDENTITY_NOT_PLACEHOLDER` against the rendered authors block / about page. | Zero placeholder names |
@@ -241,6 +242,6 @@ Phase 20V adds a `PAGES_ENABLED` structural check that calls `GET /repos/$OWNER/
 
 ## Cross-references
 
-- `comprev-orchestrator-v29` §Phase 21 row (Phase Index) — phase wiring + gate transitions
-- `comprev-orchestrator-v29` §Directive Whitelist — source-side companion of `DIRECTIVE_RENDERED_OK`
+- `comprev-orchestrator` §Phase 21 row (Phase Index) — phase wiring + gate transitions
+- `comprev-orchestrator` §Directive Whitelist — source-side companion of `DIRECTIVE_RENDERED_OK`
 - `comprev-myst-validator` checks #9, #18 — repo-wide forbidden-lexicon and author-identity rules that this phase re-runs against rendered HTML

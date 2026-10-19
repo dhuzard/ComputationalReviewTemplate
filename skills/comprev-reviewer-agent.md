@@ -1,9 +1,14 @@
+---
+name: comprev-reviewer-agent
+description: "Expert Review Pipeline v30 (ComputationalReviewTemplate): Worker skill for LITREVIEW agents conducting evidence gathering and section writing in scientific reviews. Defines HOW to evaluate literature, gather evidence, and write review prose. The orchestrator skill defines WHEN and WHAT — this skill defines HOW."
+---
+
 ## Purpose
 Worker skill for LITREVIEW agents conducting evidence gathering and section writing in scientific reviews. Defines HOW to evaluate literature, gather evidence, and write review prose. The orchestrator skill defines WHEN and WHAT — this skill defines HOW.
 
 ** For figure production, load the skill `comprev-figure-construction`.
 
-** Hygiene rule (LITREVIEW prose actors): when drafting section bodies, (a) do not insert `{contents}`, `{toctree}`, or `{include}` directives — the project-level `myst.yml` and Phase 14 assembly emit the global TOC (see `comprev-orchestrator-v29` §Directive Whitelist for the full list of allowed body directives); (b) do not name internal pipeline tooling, brands, or platform identifiers (the FORBIDDEN_LEXICON list in `comprev-myst-validator` check #9 is repo-wide); (c) do not introduce author placeholders such as `Human Supervisor`, `Anonymous`, or `<NAME>` anywhere in prose. Phase 7V, 19V, and 20V validators flag violations and send the section back.
+** Hygiene rule (LITREVIEW prose actors): when drafting section bodies, (a) do not insert `{contents}`, `{toctree}`, or `{include}` directives — the project-level `myst.yml` and Phase 14 assembly emit the global TOC (see `comprev-orchestrator` §Directive Whitelist for the full list of allowed body directives); (b) do not name internal pipeline tooling, brands, or platform identifiers (the FORBIDDEN_LEXICON list in `comprev-myst-validator` check #9 is repo-wide); (c) do not introduce author placeholders such as `Human Supervisor`, `Anonymous`, or `<NAME>` anywhere in prose. Phase 7V, 19V, and 20V validators flag violations and send the section back.
 
 ---
 

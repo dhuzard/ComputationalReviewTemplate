@@ -3,7 +3,7 @@ import test from 'node:test';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { adaptEvidencePackage, applyEvidenceAvailability, discoverEvidenceFiles, explorerDataFromLoad, loadEvidenceDirectory, validateCanonicalPackage } from '../plugins/evidence-explorer-plugin.mjs';
+import plugin, { EvidenceLoadError, adaptEvidencePackage, applyEvidenceAvailability, discoverEvidenceFiles, evidenceLoadWarnings, explorerDataFromLoad, loadEvidenceDirectory, validateCanonicalPackage } from '../plugins/evidence-explorer-plugin.mjs';
 
 const fixtures = new URL('./fixtures/evidence-contract/', import.meta.url);
 function fixture(name) {
@@ -164,4 +164,51 @@ test('requires a declared Evidence Database to have a compatible package', () =>
   const declaredAbsent = applyEvidenceAvailability(loadEvidenceDirectory(absent), 'not_provided');
   assert.equal(declaredAbsent.status, 'not_provided');
   assert.match(declaredAbsent.diagnostics.message, /explicitly declares/);
+});
+
+test('upstream data-binding fixtures load through the bounded legacy adapter', () => {
+  const upstream = new URL('../scripts/test_fixtures/evidence_explorer/', import.meta.url);
+  const expected = {
+    populated: { sections: [1, 2, 3], findings: 6, conflicts: 3, figure_data: 3, warnings: 0 },
+    legacy: { sections: [1, 2], findings: 4, conflicts: 2, figure_data: 0, warnings: 0 },
+    gap: { sections: [1, 2, 5], findings: 3, conflicts: 3, figure_data: 0, warnings: 1 },
+  };
+  for (const [name, want] of Object.entries(expected)) {
+    const result = loadEvidenceDirectory(new URL(`${name}/`, upstream).pathname);
+    assert.equal(result.status, 'loaded', name);
+    assert.ok(result.diagnostics.loaded.every(entry => entry.compatibility === 'legacy-section-package'), name);
+    const data = explorerDataFromLoad(result);
+    assert.deepEqual(data.sections.map(section => section.section), want.sections, name);
+    assert.equal(data.findings.length, want.findings, name);
+    assert.equal(data.conflicts.length, want.conflicts, name);
+    assert.equal(data.figure_data.length, want.figure_data, name);
+    assert.equal(evidenceLoadWarnings(result).length, want.warnings, name);
+  }
+});
+
+test('section-count and gap warnings are advisory and respect discovery mode', () => {
+  const path = fixture('canonical');
+  try {
+    const pattern = loadEvidenceDirectory(path);
+    assert.match(evidenceLoadWarnings(pattern).join('\n'), /no evidence file for section\(s\) 03, 04, 05, 06, 07, 08, 09/);
+    assert.match(evidenceLoadWarnings(pattern, { sectionCount: 3 }).join('\n'), /loaded 2 section\(s\).*:sections: declares 3/);
+    writeFileSync(join(path, 'manifest.json'), JSON.stringify({ schema_version: 1, packages: [
+      { file: 'evidence_section_02.json', order: 2 }, { file: 'evidence_section_10.json', order: 10 },
+    ] }));
+    const manifest = loadEvidenceDirectory(path);
+    assert.equal(manifest.discovery_mode, 'manifest');
+    assert.deepEqual(evidenceLoadWarnings(manifest), []);
+    assert.equal(evidenceLoadWarnings(manifest, { sectionCount: 3 }).length, 1);
+    assert.deepEqual(evidenceLoadWarnings(applyEvidenceAvailability(manifest, 'not_provided'), { sectionCount: 3 }), []);
+  } finally { cleanup(path); }
+});
+
+test('declared-available failures raise EvidenceLoadError and are never downgraded to placeholders', () => {
+  const path = fixture('empty');
+  try {
+    assert.throws(() => applyEvidenceAvailability(loadEvidenceDirectory(path)), EvidenceLoadError);
+    const node = { type: 'evidence-explorer', evidenceDir: path, evidenceAvailability: 'available' };
+    assert.throws(() => plugin.transforms[0].plugin({}, {})({ type: 'root', children: [node] }, { path: join(path, 'page.md') }), /no_compatible_files/);
+    assert.equal(node.type, 'evidence-explorer');
+  } finally { cleanup(path); }
 });

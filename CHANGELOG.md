@@ -1,3 +1,187 @@
+# Unreleased
+
+- New skill `comprev-writing-style`: prose rules for review sections, loaded by the writers at
+  Phases 7 and 11, applied as a standard by the critics at Phases 8 and 12, and by the fix
+  executor at Phase 18. Nine rules — order of argument, one move per paragraph, enumerations as
+  lists, relations restored after splitting, one idea per sentence, the finding in the stress
+  position, agents and actions, no narration of the review's own retrieval, and one typographic
+  convention. The skill states that a caveat outranks brevity: shortening prose by deleting a
+  qualification is a defect, not a style improvement.
+- New `scripts/check_prose_fidelity.py`: compares two versions of prose and asserts that every
+  citation role, numeric value and cross-reference survived. Citation roles are compared as
+  ordered key tuples, so a multi-key role cannot be split or merged, and range dashes are
+  distinguished from minus signs. `--self-test` checks the comparator against edits that must
+  register as equivalent and corruptions that must be caught, including a flipped sign; the new
+  `prose-fidelity` CI job runs it on every push and pull request.
+- The orchestrator now routes `comprev-writing-style` to every phase that writes or edits prose,
+  and Phase 18 re-checks prose fidelity after applying fixes.
+- Skill count 20 → 21; manifest regenerated.
+- Fix: `ALL_PLUGINS_LISTED` asserted that `myst.yml` lists four plugins; the template ships
+  three, so the check failed a correct repository and had to be waived during a real run. It now
+  derives both sides — local `plugins/*.mjs` against the declared `project.plugins` entries —
+  and the skill states that hardcoding a count is the defect, since a review may add a plugin.
+- Fix: the orchestrator's Phase 20 push rule pointed at `gate_phase19v.json`, which no validator
+  emits; `comprev-myst-validator` states that 19V returns its map in memory and writes no gate
+  file. The rule now names what 19V actually provides.
+- Fix: the README's phase column claimed `comprev-verification` runs at 15-17 (the index routes
+  it at 16 only) and `comprev-triples-validator` at 15V only (the index routes it at 15V and 17V).
+- New `scripts/check_template_consistency.py`, run by CI on every push and pull request: twelve
+  checks that the repository agrees with itself — skill counts across every place that states
+  one, skills referenced but absent, orphan skills, README tables and phase columns against the
+  orchestrator's phase index, gates named in a skill but not routed, gates routed but produced by
+  nothing, generation quoted consistently, versioned filenames, and referenced scripts and
+  plugins present. Verified to fail on each of the three defects above.
+- Fork integration (dhuzard/ComputationalReviewTemplate): the upstream v30 protocol is merged
+  onto the versioned evidence contract. The Evidence Explorer keeps the manifest/pattern loader,
+  bounded legacy adapter, diagnostics and explicit `:availability:`; it gains the upstream
+  `:sections:` option and advisory build warnings (declared-count mismatch, interior filename
+  gaps, partial loading, zero findings). `PLUGIN_PAYLOAD_MATCHES_SOURCE`, `PLUGIN_DATA_BOUND`
+  and the cross-package coherence checks compare against loader-selected canonical packages and
+  `findings[].sources[]`; `REVIEW_COMPATIBILITY_REPORT_VALID` is defined in the MyST validator
+  and deploy-polish skills; Phase 20 no longer removes scaffold-owned scripts, schemas, tests or
+  docs. See `docs/upstream-integration.md`.
+
+# v1.2.1
+
+- Pipeline generation 29 -> **30**. v1.2.0 changed the skill protocol — three new checks in
+  `comprev-curation-validator`, two in `comprev-myst-validator`, a new gate verdict
+  (`pass_with_deferred`) and a new required gate field (`tool_probe`) — while the manifest
+  still reported generation 29. A validator written against 29 and one written against
+  v1.2.0 are not the same protocol, which is precisely the drift `skills/manifest.json` was
+  added to prevent, so the number now moves with the protocol it names.
+- All 20 skill descriptions and the two README occurrences move with it; the manifest check
+  enforces that they agree, and verified the result.
+- Reference-run artifacts deliberately keep generation 29: `content/Methods.md`,
+  `content/provenance.md`, `provenance/review_request.md`, `provenance/pipeline_metrics.json`
+  and the pipeline figure notebook describe a review that really did run on 29. Rewriting
+  them would falsify the record the manifest exists to preserve.
+
+# v1.2.0
+
+Three gates added or moved, each closing a path a real defect took through the reference run.
+No change to plugin behaviour, the site build, or published output.
+
+**Plugin data binding is verified at Phase 14, not after deployment.**
+
+- New `PLUGIN_PAYLOAD_MATCHES_SOURCE` (`comprev-myst-validator` check 26) runs each
+  file-reading plugin's document transform and requires the bound payload to **equal** its
+  source files — sections, findings, conflicts and figure_data against
+  `evidence/evidence_section_*.json` — rather than merely be non-empty. At 14V the pipeline
+  previously confirmed only that the directive was invoked (check 21) and that the packages
+  were populated (check 22); both passed while the Evidence Database page published empty,
+  and the only binding check ran after deployment. Phase 21's `PLUGIN_DATA_BOUND` is now
+  explicitly a deployed re-check and also requires equality.
+- New `DATA_PLUGIN_NEGATIVE_TEST` (check 27): every file-reading plugin must ship an
+  executable test that the validator runs, covering both directions of emptiness — an empty
+  data directory renders the placeholder and the build survives; unmatched or unreadable
+  input fails the build.
+- New `scripts/test_evidence_explorer.mjs` with committed fixtures under
+  `scripts/test_fixtures/evidence_explorer/` (10 KB, no dependencies), run by the new
+  `Plugin tests` workflow on every push and pull request. Eight cases: the populated bind,
+  cite-key strings staying out of findings, the un-instantiated template, unmatched JSON, a
+  missing directory, legacy filenames, an interior gap, and a `:sections:` mismatch. Verified
+  to fail 8/8 against the plugin revision that shipped the empty explorer.
+
+**A check that never ran is no longer recordable as a check that passed.**
+
+- New gate verdict `pass_with_deferred` with a `deferred_checks` list; `gate_passed: true`
+  is forbidden while any hard check is deferred. Every downstream gate that can run a deferred
+  check must run it and record its own verdict — citing the upstream result, fallback or
+  `pass_with_deferred` is forbidden, and an entry still deferred at Phase 20 is an open
+  failure.
+- Any claim that a tool is unavailable must carry the captured output of the commands that
+  establish it, recorded in the gate under `tool_probe`, and must probe every environment
+  available to the session rather than only the active one. In the reference run an
+  unsupported "no node/npm" note was false and deferred the first real build by five phases.
+- `comprev-myst-validator` states that Phase 14V runs a real build: it is the first gate that
+  can, 19V and Phase 21 repeat rather than replace it, and a 14V gate whose build never
+  executed is `pass_with_deferred` at best. The `BIB_CITE_KEYS_RESOLVE` fallback is admissible
+  only with a `tool_probe` record, and records checks 10-13 as deferred, never as pass.
+- Two new rows in the orchestrator's failure-mode table: deferred check inherited as passed,
+  and unsupported capability claim.
+
+**Packages describing the same paper must agree.**
+
+- `comprev-curation-validator` gains three cross-package coherence checks, all hard fails.
+  Sections are curated independently, so a paper cited in several of them is described several
+  times, and each description can be internally consistent while disagreeing with its
+  siblings; no per-section check can see that. `DOI_ATTRIBUTE_COHERENCE` (check 11) requires
+  findings sharing a DOI to agree on study system, species, region and preparation, resolved
+  against the paper's own metadata. `SHARED_KEY_SOURCE_UNION` (check 12) requires source
+  sentences to be merged across packages rather than partitioned, so a value sourced in one
+  package is not deleted as unsourceable in another. `CLAIM_DOES_NOT_EXCEED_SOURCE` (check 13)
+  is a contradiction screen — not an entailment proof — failing when a source sentence states
+  an explicit null while the claim asserts an effect, or when the claim measures something the
+  sentence does not.
+
+# v1.1.1
+
+Documentation only; no change to the pipeline protocol or the site build.
+
+- `evidence/README.md` taught the superseded naming: `section_NN_evidence_package.json`
+  numbered from 02, asserting the Introduction had no evidence package. Corrected to
+  `evidence_section_NN.json` numbered from 01 and covering every section. Its JSON schema
+  listed four top-level keys that no real package contains and omitted the 25 that Phase 5
+  writes; it now documents only the explorer's contract (`section_title`, `findings[]`,
+  `conflicts[]`, `figure_data[]`) and names the Phase 5 spec as authoritative.
+- The Quick Start named three files to make a new repo yours; six carry this template's
+  identity. Added `README.md` (DOI badge and How to Cite, both pointing at this template's
+  Zenodo record), `LICENSE` (copyright holder) and `.github/ISSUE_TEMPLATE/config.yml`.
+- Added the GitHub Pages step — Settings → Pages → Source: GitHub Actions, which a template
+  instantiation does not set and without which the deploy job fails — plus a Requirements
+  paragraph (node ≥ 18, npm, python ≥ 3.9) and a Platform paragraph stating that the
+  protocol is portable but the `host.*` orchestration calls are not.
+- Removed the hardcoded contact link from `config.yml`: it pointed at this template's
+  Discussions, which are not enabled, so it was dead here and misdirected in every review
+  created from it.
+- Dropped the literal release number from the Versioning section and the pinned version from
+  the citation line; both were stale within hours and the DOI is the concept DOI, which
+  always resolves to the newest release.
+
+# v1.1.0
+
+- **Renamed:** `skills/comprev-orchestrator-v29.md` → **`skills/comprev-orchestrator.md`**
+  (frontmatter `name` likewise). A generation bump no longer renames a file or breaks the
+  cross-references in four other skills. Saved prompts and bookmarks naming the old path
+  must be updated; nothing depends on this repository programmatically, and reviews already
+  produced carry their own frozen copy of `skills/`, so they are unaffected.
+- New `skills/manifest.json` — single source of truth for the pipeline generation plus the
+  sha256 and byte count of every skill file. Generated and verified by
+  `scripts/build_skill_manifest.py`; the new `Skill manifest` GitHub Actions workflow runs
+  `--check` on every push and pull request.
+- The pipeline generation and the repository release version are now explicitly separate: the
+  generation lives only in the manifest, the release only in git tags. `README.md` gains a
+  `Versioning` section stating this.
+- Session setup verifies the manifest and writes `provenance/pipeline_version.json`
+  (generation, template commit, template tag, manifest hash, skill artifact ids). Phase 1's
+  `review_request.md` header, Phase 13/20a Methods M.8 and `pipeline_metrics.json` now read
+  the version from that file instead of carrying a typed-in number.
+- `comprev-deploy-polish.md` gains the shared `Expert Review Pipeline v29
+  (ComputationalReviewTemplate):` description prefix, which the manifest check enforces.
+
+# v29 — Claude Science runtime compatibility
+
+- Runs on the current Claude Science product with nothing to install: the coordinator saves
+  `skills/*.md` as artifacts at session start and hands sub-agents the skill files they need
+  (new "Runtime: Claude Science" section in `comprev-orchestrator-v29.md`).
+- LITREVIEW / DATAML are documented as roles delegated to default sub-agents, not profiles.
+- Legacy calls updated: `delegate_to` → `host.delegate`, `operon.*` / `pipeline.*` → `host.*`.
+  Phase 20 push via `git push` only.
+- Fix: Phase 13/20a Methods text no longer hardcodes `claude-sonnet-4-5` or names "Operon"
+  (which tripped the FORBIDDEN_LEXICON check at 19V/20V); model id now passed as `MODEL_ID`.
+- Phase 6 figure-audit critic: told not to search the network rather than assumed unable to.
+- Fix: `evidence-explorer-plugin.mjs` never followed the `evidence_section_NN.json` rename
+  below, read sections `02..13`, treated `argument_groups.*.supporting_findings` cite-key
+  strings as finding records, and swallowed every read failure in `catch { continue }` — so a
+  complete evidence set bound an empty explorer with a green build. It now discovers the
+  section files present (no hardcoded count), prefers `ev.findings`, and throws when nothing
+  loads; `:sections:` optionally declares the expected count. An evidence directory with no
+  JSON at all is treated as an un-instantiated template and renders a placeholder, so the
+  template's own build still passes; JSON files present but matching no package name stay
+  fatal.
+- All 20 skill files gain `name`/`description` YAML frontmatter (optional publishing).
+- README Quick Start rewritten (template → edit 3 files → connect GitHub → paste prompt).
+
 # Skill catalogue v28 → v29
 
 ## File changes

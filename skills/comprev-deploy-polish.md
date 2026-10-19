@@ -1,6 +1,6 @@
 ---
 name: comprev-deploy-polish
-description: Phase 21 (post-deployment) UX validation skill. Runs after Phase 20 push to main confirms green build. Catches deployment-class defects (per-page rendering, plugin data-binding, figure dropdown completeness, link health, asset paths, frontmatter visibility) that compile-time checks miss. Loaded by a DATAML validator sub-frame; produces gate_phase21_deploy_polish.json and (on FAIL) a structured fix-list returned to coordinator. Coordinator opens at most one targeted fix-loop iteration before final user sign-off.
+description: "Expert Review Pipeline v30 (ComputationalReviewTemplate): Deploy Polish — Phase 21 (post-deployment) UX validation skill. Runs after Phase 20 push to main confirms green build. Catches deployment-class defects (per-page rendering, plugin data-binding, figure dropdown completeness, link health, asset paths, frontmatter visibility) that compile-time checks miss. Loaded by a DATAML validator sub-frame; produces gate_phase21_deploy_polish.json and (on FAIL) a structured fix-list returned to coordinator. Coordinator opens at most one targeted fix-loop iteration before final user sign-off."
 ---
 
 # Deploy Polish — Phase 21 Post-Deployment UX Validation
@@ -80,8 +80,9 @@ live URL needed) or **Tier B** (requires `DEPLOY_ACCESSIBLE=true`).
 | `FIGURE_ASSETS_RESOLVE` | A | Every `<img src=...>` in the deployed HTML resolves to a file present in the built-artifact tarball (relative paths) or returns HTTP 200 (absolute URLs, only if Tier B available). | All image paths/URLs resolve |
 | `INTERNAL_LINK_HEALTH` | A | Every internal anchor (`#section-id`, cross-section links, `[[wikilink]]` resolutions) resolves to an existing page or anchor in the built-artifact tarball. | Zero broken internal links |
 | `EXTERNAL_LINK_HEALTH` | B | Every external `https?://` link in deployed HTML returns 2xx or 3xx (HEAD request, 10s timeout, 1 retry). Soft-fail allowed for known-rate-limited domains (configurable). | ≤2% failure rate excluding allowlisted domains |
-| `PLUGIN_DATA_BOUND` | A | If MyST plugins (figure-index, citation-index, glossary) declare data bindings in `myst.yml`, each binding resolves to non-empty data in the built-artifact tarball (rendered HTML inspection). | All declared plugins emit non-empty data |
+| `PLUGIN_DATA_BOUND` | A | Deployed re-check of `PLUGIN_PAYLOAD_MATCHES_SOURCE` (`comprev-myst-validator` #26), which is the first line of defence at 14V. Every file-reading plugin's binding resolves in the built-artifact tarball to data **equal to** its source — for `evidence-explorer`, the section/finding/conflict/figure_data counts, `evidence_status` and `diagnostics` equal the loader result (`loadEvidenceDirectory` + `applyEvidenceAvailability` from the deployed plugin: manifest-selected or pattern-discovered packages after compatibility adaptation), not a raw `evidence/evidence_section_*.json` glob. Non-emptiness alone is insufficient: a partial bind passes it. A valid package set with zero findings binds zero findings and passes; a `not_provided` declaration binds the explicit empty payload. | Counts equal loader result; zero declared-available plugins binding empty |
 | `EVIDENCE_EXPLORER_STATUS_RENDERED` | A | Inspect the built Evidence Database page. It must contain the explorer widget and, when the source declares `not_provided`, a truthful no-database status; when it declares `available`, it must not contain unavailable/invalid diagnostics. Cross-check the rendered status against the loader result recorded in the assembly gate. | Rendered status and gate result agree |
+| `REVIEW_COMPATIBILITY_REPORT_VALID` | A | Run `node scripts/review-compatibility-report.mjs validate provenance/review_compatibility_report.json` against the report in the deployed commit and require exit status 0. Its `evidence_package_aware` status, availability and loader diagnostics must agree with `PLUGIN_DATA_BOUND` and `EVIDENCE_EXPLORER_STATUS_RENDERED`; `claim_graph_aware` is reported verbatim and never required. | Exit 0 and no contradiction with the rendered explorer |
 | `DIRECTIVE_RENDERED_OK` | A | No section page contains an unrendered MyST directive (regex `\{[a-z]+\}` followed by directive syntax, in built HTML body). | Zero unrendered directives |
 | `FORBIDDEN_LEXICON_DEPLOYED` | A | Re-run the `FORBIDDEN_LEXICON` glob against the rendered HTML (not just source). Catches cases where the build copied through a stale render. | Zero hits |
 | `AUTHOR_IDENTITY_DEPLOYED` | A | Re-run `AUTHOR_IDENTITY_NOT_PLACEHOLDER` against the rendered authors block / about page. | Zero placeholder names |
@@ -157,65 +158,7 @@ On any FAIL, the validator emits a structured fix-list keyed by check:
 
 ## Canonical `deploy.yml`
 
-Phase 20 push must guarantee the repository ships with a deploy workflow that builds the MyST site and uploads to GitHub Pages without re-executing figure notebooks. PNGs are committed to the repository as the canonical figure render; the `.ipynb` files accompany them as reproducibility artifacts only. Use this workflow verbatim (modulo project-specific Python versions and extra `pip install` packages from your reproducibility requirements):
-
-```yaml
-name: Deploy MyST site
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-
-      - uses: actions/setup-node@v4
-        with: { node-version: "18" }
-
-      - name: Install dependencies
-        run: |
-          pip install mystmd
-          npm install -g mystmd
-          npm install yaml
-
-      - name: Skip figure-notebook execution (PNGs already committed)
-        run: |
-          echo "Figure notebooks ship as reproducibility artifacts only."
-          echo "Committed PNGs:"; ls figures/*.png | wc -l
-
-      - name: Build MyST site
-        run: myst build --html
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with: { path: _build/html }
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-```
+Phase 20 push must guarantee the repository ships with a deploy workflow that builds the MyST site and uploads to GitHub Pages without re-executing figure notebooks. PNGs are committed to the repository as the canonical figure render; the `.ipynb` files accompany them as reproducibility artifacts only. The checked-in `.github/workflows/deploy.yml` is the authoritative workflow; this skill does not carry a second copy. Phase 20 MUST leave it in place (it is scaffold-owned infrastructure) and MUST NOT regenerate or downgrade it from memory. It installs the pinned `mystmd` CLI, confirms the committed PNGs exist, builds with `myst build --html` under `BASE_URL`, uploads `_build/html`, and deploys with `actions/deploy-pages`. Its only per-project edit is `BASE_URL`, which must be `/<repository-name>` for the target repository; do not change action versions, the `mystmd` pin, or permissions during a review run. Add extra `pip install` packages from the reproducibility requirements only if the build needs them.
 
 **Notebook execution belongs in a separate workflow.** A `reproducibility.yml` workflow may run `jupyter execute figures/notebooks/*.ipynb --timeout=120` on a schedule or manual dispatch, with failure non-blocking for the live site. Do not couple notebook re-execution to the deploy critical path.
 
@@ -241,6 +184,6 @@ Phase 20V adds a `PAGES_ENABLED` structural check that calls `GET /repos/$OWNER/
 
 ## Cross-references
 
-- `comprev-orchestrator-v29` §Phase 21 row (Phase Index) — phase wiring + gate transitions
-- `comprev-orchestrator-v29` §Directive Whitelist — source-side companion of `DIRECTIVE_RENDERED_OK`
+- `comprev-orchestrator` §Phase 21 row (Phase Index) — phase wiring + gate transitions
+- `comprev-orchestrator` §Directive Whitelist — source-side companion of `DIRECTIVE_RENDERED_OK`
 - `comprev-myst-validator` checks #9, #18 — repo-wide forbidden-lexicon and author-identity rules that this phase re-runs against rendered HTML

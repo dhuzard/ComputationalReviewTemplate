@@ -15,17 +15,30 @@ const LEGACY_FILENAMES = [
 
 const evidenceDirective = {
   name: 'evidence-explorer',
-  doc: 'Interactive evidence database explorer. Packages are discovered from evidence/manifest.json or documented evidence filename patterns.',
-  options: { 'evidence-dir': { type: String }, availability: { type: String }, height: { type: String } },
+  doc: 'Interactive evidence database explorer. The :evidence-dir: option is resolved relative to the calling markdown file (default "../evidence"). Packages are discovered from evidence/manifest.json or documented evidence filename patterns, so no section count is assumed; set the optional :sections: option to the review\'s section count to have an incomplete load reported as a build warning. :availability: is available (default) or not_provided.',
+  options: {
+    'evidence-dir': { type: String },
+    availability: { type: String },
+    height: { type: String },
+    sections: { type: Number },
+  },
   run(data) {
     return [{
       type: 'evidence-explorer',
       evidenceDir: data.options?.['evidence-dir'] || '../evidence',
       evidenceAvailability: data.options?.availability || 'available',
       height: data.options?.height || '700px',
+      sectionCount: data.options?.sections || 0,
     }];
   },
 };
+
+// Raised when a declared Evidence Database cannot be bound; deliberately not
+// caught by the transform, so a regression in filenames or the directory fails
+// the build instead of publishing an empty explorer.
+export class EvidenceLoadError extends Error {
+  constructor(message) { super(message); this.name = 'EvidenceLoadError'; }
+}
 
 function asArray(value) { return Array.isArray(value) ? value : []; }
 function integer(value) { return Number.isInteger(value) && value >= 0; }
@@ -235,9 +248,69 @@ export function applyEvidenceAvailability(result, availability = 'available') {
   }
   if (BLOCKING_AVAILABLE_STATUSES.has(result.status)) {
     const detail = result.diagnostics.message || result.diagnostics.rejected.map(entry => `${entry.file}: ${entry.reason}`).join('; ');
-    throw new Error(`Evidence Database is declared available but no compatible package could be loaded (${result.status}). ${detail}`);
+    throw new EvidenceLoadError(`Evidence Database is declared available but no compatible package could be loaded (${result.status}). ${detail}`);
   }
   return result;
+}
+
+function padOrder(order) { return String(order).padStart(2, '0'); }
+
+const MAX_LISTED_GAPS = 20;
+
+/**
+ * Missing section orders between adjacent discovered orders, without walking the
+ * span: work and output are bounded by the number of files and MAX_LISTED_GAPS,
+ * however sparse the orders are. Orders beyond Number.MAX_SAFE_INTEGER cannot be
+ * enumerated exactly, so they are excluded from the analysis and counted.
+ */
+function orderGaps(entries) {
+  const safe = [...new Set(entries.filter(integer))].filter(Number.isSafeInteger).sort((a, b) => a - b);
+  const unsafe = new Set(entries.filter(integer)).size - safe.length;
+  const listed = [];
+  let total = 0n;
+  for (let i = 1; i < safe.length; i += 1) {
+    const missing = BigInt(safe[i]) - BigInt(safe[i - 1]) - 1n;
+    total += missing;
+    for (let order = safe[i - 1] + 1; listed.length < MAX_LISTED_GAPS && order < safe[i]; order += 1) listed.push(padOrder(order));
+  }
+  return { listed, total, unsafe };
+}
+
+/**
+ * Advisory build warnings for a bound (non-fatal) load. They never change the
+ * payload: a reader may still see a partial explorer, while review gates reject
+ * partial sets from the loader diagnostics. Interior gaps are only meaningful
+ * for filename discovery; a manifest declares its packages explicitly and may
+ * be deliberately non-contiguous. Long gap lists are truncated with a count.
+ */
+export function evidenceLoadWarnings(result, { sectionCount = 0, evidenceDir = 'evidence directory' } = {}) {
+  if (result.status === 'not_provided') return [];
+  const warnings = [];
+  let gaps = { listed: [], total: 0n, unsafe: 0 };
+  if (result.discovery_mode === 'pattern') {
+    gaps = orderGaps(result.diagnostics.discovered.map(file => patternEntry(file)?.order));
+  }
+  if (gaps.unsafe) {
+    warnings.push(`evidence-explorer: ${gaps.unsafe} evidence file(s) in ${evidenceDir} have a section order beyond ${Number.MAX_SAFE_INTEGER}; they were not checked for gaps.`);
+  }
+  const gapText = gaps.total > BigInt(gaps.listed.length)
+    ? `${gaps.listed.join(', ')} and ${gaps.total - BigInt(gaps.listed.length)} more`
+    : gaps.listed.join(', ');
+  const loadedSections = result.packages.length;
+  if (gaps.total > 0n || (sectionCount && loadedSections !== sectionCount)) {
+    warnings.push(`evidence-explorer: loaded ${loadedSections} section(s) from ${evidenceDir}`
+      + (sectionCount ? `, but :sections: declares ${sectionCount}` : '')
+      + (gaps.total > 0n ? `; no evidence file for section(s) ${gapText}` : '')
+      + '; the explorer is incomplete.');
+  }
+  if (result.status === 'partial_loading') {
+    const rejected = result.diagnostics.rejected.map(entry => `${entry.file}: ${entry.reason}`).join('; ');
+    warnings.push(`evidence-explorer: ${result.diagnostics.rejected.length} package(s) in ${evidenceDir} were rejected (${rejected}); the explorer renders a partial set, which review gates reject.`);
+  }
+  if (result.status === 'loaded_zero_findings') {
+    warnings.push(`evidence-explorer: ${loadedSections} package(s) loaded from ${evidenceDir} but they contain zero findings; the explorer will render empty finding panels.`);
+  }
+  return warnings;
 }
 
 function normalizeConflict(conflict, section) {
@@ -283,12 +356,18 @@ export function explorerDataFromLoad(result) {
 const evidenceTransform = {
   name: 'evidence-data-loader',
   stage: 'document',
-  plugin: () => (tree, vfile) => {
+  plugin: (opts, utils) => (tree, vfile) => {
+    function warn(message, node) {
+      if (utils && typeof utils.fileWarn === 'function') utils.fileWarn(vfile, message, { node });
+      else console.warn(message);
+    }
     function transform(node) {
       if (node?.type === 'evidence-explorer') {
         const documentDir = vfile?.path ? dirname(vfile.path) : process.cwd();
-        const loaded = loadEvidenceDirectory(resolve(documentDir, node.evidenceDir || '../evidence'));
+        const evidenceDir = resolve(documentDir, node.evidenceDir || '../evidence');
+        const loaded = loadEvidenceDirectory(evidenceDir);
         const result = applyEvidenceAvailability(loaded, node.evidenceAvailability || 'available');
+        for (const message of evidenceLoadWarnings(result, { sectionCount: node.sectionCount || 0, evidenceDir })) warn(message, node);
         node.type = 'anywidget';
         node.id = `evidence-explorer-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         node.esm = './evidence-explorer-widget.mjs';

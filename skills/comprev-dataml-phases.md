@@ -1101,6 +1101,7 @@ for bulk uploads — it can push wrong file contents to multiple paths).
      `provenance/review_compatibility_report.template.json`
    - `scripts/review-compatibility-report.mjs`, `scripts/build_skill_manifest.py`,
      `scripts/check_prose_fidelity.py`, `scripts/check_template_consistency.py`,
+     `scripts/frames_ledger.py`, `scripts/skill_catalog.py`,
      `scripts/test_evidence_explorer.mjs`, `scripts/test_fixtures/`,
      `scripts/shared_style.py`
 5. **Verify file signatures** after copy:

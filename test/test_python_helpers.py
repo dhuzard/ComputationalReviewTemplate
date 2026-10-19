@@ -144,5 +144,34 @@ class NoHostFramesInPython(unittest.TestCase):
         self.assertIn("frames_ledger", (ROOT / "skills" / "comprev-dataml-phases.md").read_text(encoding="utf-8"))
 
 
+class ValidatorFrameCountBridge(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "provenance").mkdir()
+        (self.tmp / frames_ledger.LEDGER).write_text(json.dumps(FRAMES))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_methods_ledger_fresh_frame_count_check(self):
+        validator = (ROOT / "skills" / "comprev-myst-validator.md").read_text(encoding="utf-8")
+        check = validator.split("**Pipeline Execution frame count", 1)[1].split("    3.", 1)[0]
+        self.assertIn("provenance/frames_ledger.json", check)
+        self.assertIn("len(load_frames())", check)
+        self.assertNotIn("host.frames(", check)
+        preserve = (ROOT / "skills" / "comprev-dataml-phases.md").read_text(encoding="utf-8")
+        preserve = preserve.split("4. **Preserve** all scaffold-owned", 1)[1].split("5. **Verify file signatures**", 1)[0]
+        for helper in ("scripts/frames_ledger.py", "scripts/skill_catalog.py"):
+            self.assertIn(f"`{helper}`", preserve)
+        with Cwd(self.tmp):
+            frames = frames_ledger.load_frames()
+        frame_count = len(frames)
+        self.assertEqual(frame_count, 3)
+        for tolerance in [-1, 0, 1]:
+            declared_count = frame_count + tolerance
+            self.assertLessEqual(abs(declared_count - frame_count), 1,
+                f"validator tolerance check: {declared_count} frames declared, {frame_count} in ledger, ±1 range is {frame_count-1} to {frame_count+1}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -209,10 +209,12 @@ Any other import is a fail. Reports offenders as `notebook:line:module`. **pass/
        `\bin progress \(this document\b`,
        `\bwill be captured in the final\b`,
        `\bPhases? 1[4-9].20 \(scheduled\)`. Zero hits required.
-    2. **Pipeline Execution frame count matches live ledger.** Parse the integer that
-       follows `Total session frames: \*\*` in the Pipeline Execution section. Must equal
-       `len(host.frames(project_id=PROJECT_ID, roots_only=False, has_task=False)['frames'])`
-       within ±1 (allow for the validator's own frame).
+    2. **Pipeline Execution frame count matches ledger bridge.** Parse the integer that
+       follows `Total session frames: \*\*` in the Pipeline Execution section. The
+       coordinator writes the frame ledger to `provenance/frames_ledger.json` via the
+       Frame ledger bridge (see `comprev-orchestrator.md`); load it with
+       `len(load_frames())` from `scripts/frames_ledger.py`. The parsed integer must equal
+       `len(load_frames())` within ±1 (allow for the validator's own frame).
     3. **Pipeline Execution phases-completed wording is final.** The phrase
        "All 21 pipeline phases completed" (case-sensitive) must appear in
        the Pipeline Execution section.

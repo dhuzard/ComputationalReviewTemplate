@@ -24,8 +24,8 @@
     {
       "name": "comprev-dataml-phases",
       "file": "skills/comprev-dataml-phases.md",
-      "bytes": 65622,
-      "sha256": "9ab7cb4385fa1674f5eaafc8f632388b43864d11fc617a6bcf711b9f4404c737"
+      "bytes": 65683,
+      "sha256": "67af3c5a2f9074183f7c4937487d408a816c2029c7b1f93176297b9c788e3f65"
     },
     {
       "name": "comprev-deploy-polish",
@@ -72,8 +72,8 @@
     {
       "name": "comprev-myst-validator",
       "file": "skills/comprev-myst-validator.md",
-      "bytes": 26494,
-      "sha256": "df868ba5e0a8f26c3b793edc3ba35cc2e4ad59d31f6d2b9ff18469972e88f1f2"
+      "bytes": 26667,
+      "sha256": "48ab6b42b25da083d15515012b1220f74c60c7bc23b7176eec626be6a0267660"
     },
     {
       "name": "comprev-orchestrator",

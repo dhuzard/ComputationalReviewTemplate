@@ -213,6 +213,38 @@ Retained risks:
 - The template ships no real review. The compatibility report template is an
   example; it does not claim that a review was completed.
 
+## Reviewer followups: Documentation repair (2026-10-19)
+
+Two small repairs to prior fixes were identified and applied in the repair
+worktree. Both repair documentation to match the actual orchestrator
+implementation (the Frame ledger bridge); no code behavior changed.
+
+1. **`comprev-myst-validator.md` lines 212–215 (METHODS_LEDGER_FRESH check #2):**
+   Updated prose from describing `host.frames(...)['frames']` (not accessible in
+   Python) to describing the documented Frame ledger bridge: the coordinator
+   exports the frame ledger to `provenance/frames_ledger.json`, and the validator
+   loads it with `load_frames()` from `scripts/frames_ledger.py`. The ±1 tolerance
+   is preserved. A regression test was added to `test/test_python_helpers.py`
+   (`ValidatorFrameCountBridge.test_methods_ledger_fresh_frame_count_check`) that
+   exercises this documented consumer against the bridge fixture.
+
+2. **`comprev-dataml-phases.md` lines 1102–1105 (Phase 20 scaffold preserve list):**
+   Added `scripts/frames_ledger.py` and `scripts/skill_catalog.py` to the
+   explicit list of scaffold-owned paths that must not be deleted during Phase 20
+   cleanup. These helpers are invoked by documented skill code snippets (Phase 13
+   M.6 snapshot, Phase 20a ledger refresh, and the Methods table builder). The
+   test suite ensures both remain in place.
+
+| Command | Result (repair worktree) |
+|---|---|
+| `python3 test/test_python_helpers.py` | pass — 10/10 (including new regression test) |
+| `python3 scripts/build_skill_manifest.py --check` | pass — 21 skills, pipeline v30 |
+| `python3 scripts/check_template_consistency.py` | pass — 12/12 |
+| `python3 scripts/check_prose_fidelity.py --self-test` | pass — 16/16 |
+| `node scripts/test_evidence_explorer.mjs` | pass — 14/14 |
+| `node --test test/*.test.mjs` (mystmd 1.10.1) | pass — 29/29 |
+| `git diff --check` | pass — no trailing whitespace |
+
 ## Scope
 
 Nothing was pushed, published or opened as a pull request. `main`, other

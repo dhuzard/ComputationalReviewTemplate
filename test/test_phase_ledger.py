@@ -1163,6 +1163,43 @@ class CitationContract(Env):
             pl.restart(self.root)
         self.assertIn("missing_occurrence", self.codes(ctx))
 
+    # -- unsupported container layout (previously a silent zero-extraction)
+    BLOCKER = "x\n\n> - ```\n    > {cite:p}`Smith2020`\n> ```\n> ```\n"
+
+    def legacy_scan(self):
+        """Stage artifacts the way the superseded scanner accepted them: zero occurrences for the blocker file.
+        Used only to construct on-disk artifacts; every validation below runs unpatched."""
+        orig = co._Doc.scan
+
+        def scan(doc, skip_frontmatter=True):
+            return [] if doc.rel == "content/zz_blocker.md" else orig(doc, skip_frontmatter)
+        return mock.patch.object(co._Doc, "scan", scan)
+
+    def test_blocker_layout_is_rejected_at_15_with_the_ledger_unchanged(self):
+        self.manuscript()
+        (self.tmp / "content/zz_blocker.md").write_text(self.BLOCKER)
+        with self.legacy_scan():
+            tco.stage_extraction(self.root)
+        self.assertEqual(len(tco.read_json(self.root, co.EXTRACTION)["occurrences"]), 11)
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertIn("unsupported_container_layout", self.codes(ctx))
+
+    def test_previously_accepted_zero_extraction_artifacts_cannot_reach_15V_16_or_the_seal(self):
+        self.manuscript()
+        (self.tmp / "content/zz_blocker.md").write_text(self.BLOCKER)
+        with self.legacy_scan():
+            self.run_to("16")  # the superseded behaviour: 15, 15V and 16 accepted and sealed
+            self.assertTrue(pl.citation_seal_state(self.root)["sealed"])
+        # a ledger written under the previous scanner is reopened, not silently upgraded or trusted
+        before = self.state_path().read_bytes()
+        rev = pl.load_ledger(self.root).revision
+        for fn in (lambda: pl.restart(self.root), lambda: pl.require_phase("16", self.root)):
+            with self.assertRaises(pl.GateError) as ctx:
+                fn()
+            self.assertIn("unsupported_container_layout", [d["code"] for d in ctx.exception.diagnostics])
+        self.assertEqual(self.state_path().read_bytes(), before)
+        self.assertEqual(pl.load_ledger(self.root).revision, rev)
+
     # -- sealing
     def test_a_failed_16_does_not_seal_the_revision(self):
         self.run_to("15V")

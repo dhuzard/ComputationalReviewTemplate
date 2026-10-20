@@ -8,7 +8,7 @@
   "required": ["schema_version", "scanner_version", "manuscript_revision", "sources", "occurrence_count", "extraction_digest", "occurrences"],
   "properties": {
     "schema_version": {"const": "comprev.citation_occurrences/1"},
-    "scanner_version": {"const": "comprev.citation_scanner/2"},
+    "scanner_version": {"const": "comprev.citation_scanner/3"},
     "manuscript_revision": {"$ref": "#/$defs/sha256"},
     "extraction_digest": {"$ref": "#/$defs/sha256"},
     "occurrence_count": {"type": "integer", "minimum": 0},

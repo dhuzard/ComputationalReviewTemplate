@@ -693,6 +693,42 @@ class CommandLineTests(Tmp):
                                     "validate-verdicts", "--help"], capture_output=True, text=True).stdout
         self.assertNotRegex(help_text, r"skip|bypass|trust|force|no-fresh")
 
+    BAD = "x\n\n> - ```\n    > {cite:p}`Smith2020`\n> ```\n> ```\n"
+
+    def snapshot_tree(self):
+        return {str(p.relative_to(self.root)): (p.read_bytes() if p.is_file() else None)
+                for p in sorted(self.root.rglob("*"))}
+
+    def test_unsupported_container_layout_fails_every_command_without_writes(self):
+        make_manuscript(self.root)
+        stage_extraction(self.root)
+        stage_coverage(self.root)
+        stage_verification(self.root)
+        self.text("content/zz_bad.md", self.BAD)
+        before = self.snapshot_tree()
+        for command in ("extract", "snapshot", "coverage", "validate-occurrences", "validate-verdicts"):
+            for flags in ((), ("-O",)):
+                with self.subTest(command=command, flags=flags):
+                    args = [command, "--root", str(self.root)]
+                    if command == "snapshot":
+                        args.append("--supersede")
+                    rc, out, err = self.run_cli(*args, python=(sys.executable,) + flags)
+                    self.assertEqual(rc, 1, err)
+                    self.assertIsInstance(out, dict, "diagnostics must be JSON on stdout, not a traceback")
+                    self.assertNotIn("Traceback", err)
+                    self.assertFalse(out["ok"])
+                    self.assertEqual(codes(out["errors"]), ["unsupported_container_layout"])
+                    self.assertEqual([(d["file"], d["line"]) for d in out["errors"]], [("content/zz_bad.md", 4)])
+                    self.assertEqual(self.snapshot_tree(), before, "a failed validation must not write artifacts")
+
+    def test_fresh_extract_on_the_blocker_writes_nothing(self):
+        make_manuscript(self.root)
+        self.text("content/zz_bad.md", self.BAD)
+        rc, out, _ = self.run_cli("extract", "--root", str(self.root))
+        self.assertEqual((rc, codes(out["errors"])), (1, ["unsupported_container_layout"]))
+        self.assertFalse((self.root / co.EXTRACTION).exists())
+        self.assertFalse((self.root / co.SNAPSHOT_DIR).exists())
+
 
 # ---------------------------------------------------------------- verdicts
 class VerdictTests(Tmp):
@@ -1499,7 +1535,7 @@ class ContainerRelativeIndentation(unittest.TestCase):
         self.assertEqual(failure("-    > x\n    > {cite:p}`A`\n"), "unsupported_container_layout")
 
     def test_scanner_version_two_changes_the_revision_of_identical_sources(self):
-        self.assertEqual(co.SCANNER_VERSION, "comprev.citation_scanner/2")
+        self.assertEqual(co.SCANNER_VERSION, "comprev.citation_scanner/3")
         with tempfile.TemporaryDirectory() as d:
             make_manuscript(d)
             r2 = co.scan_sources(d).revision
@@ -1513,23 +1549,73 @@ class ContainerRelativeIndentation(unittest.TestCase):
             self.skipTest("markdown_it is a development-time oracle only")
         md = MarkdownIt("commonmark")
         key = re.compile(r"\{cite:p\}`A`")
-        outer = ["> ", ">", "  > ", "- ", "-  ", "-   ", "-    ", "1. ", "10. ", "1.  ", "> - ", "> -  ", "  > - ",
-                 "> > ", "- > ", "> 1. ", "- - ", "\t", ">\t", "-\t"]
-        pre = ["", " ", "  ", "   ", "    ", "     ", "\t", "> ", ">  ", ">   ", ">\t", "> > ", "  - "]
         unsupported = checked = 0
-        for o in outer:
-            for pf in pre:
-                for pf2 in pre:
-                    text = o + "```\n" + pf + "{cite:p}`A`\n" + pf2 + "```\n"
-                    expected = sum(len(key.findall(t.content)) for t in md.parse(text) if t.type == "inline")
-                    try:
-                        got = len(co.scan_markdown(text))
-                    except co._ScanFail:
-                        unsupported += 1  # explicit refusal is always allowed; silent disagreement is not
-                        continue
-                    checked += 1
-                    self.assertEqual(got, expected, repr(text))
+        for text in MATRIX_TEXTS():
+            expected = sum(len(key.findall(t.content)) for t in md.parse(text) if t.type == "inline")
+            try:
+                got = len(co.scan_markdown(text))
+            except co._ScanFail:
+                unsupported += 1  # explicit refusal is always allowed; silent disagreement is not
+                continue
+            checked += 1
+            self.assertEqual(got, expected, repr(text))
         self.assertGreater(checked, 500)
+        self.assertGreater(unsupported, 0)
+
+
+MATRIX_OUTER = ["> ", ">", "  > ", "- ", "-  ", "-   ", "-    ", "1. ", "10. ", "1.  ", "> - ", "> -  ", "  > - ",
+                "> > ", "- > ", "> 1. ", "- - ", "\t", ">\t", "-\t", "> - - ", "- 1. ", "   - ", "    "]
+MATRIX_PRE = ["", " ", "  ", "   ", "    ", "     ", "      ", "        ", "\t", " \t", "> ", ">  ", ">   ", ">    ",
+              ">\t", "> > ", "  - ", "\t> ", "    > ", "> \t"]
+
+
+def MATRIX_TEXTS():
+    """Fence payload / closer prefix matrix (the cite and a cite-free ambiguous line vary independently)."""
+    for o in MATRIX_OUTER:
+        for pf in MATRIX_PRE:
+            for pf2 in MATRIX_PRE:
+                yield o + "```\n" + pf + "{cite:p}`A`\n" + pf2 + "```\n"
+    for o in MATRIX_OUTER[:20]:
+        for pf in MATRIX_PRE:
+            for pf2 in MATRIX_PRE[::3]:
+                # a cite-free ambiguous line first; the cite sits in a later, otherwise ordinary line
+                yield o + "x\n" + pf + "ambiguous\n" + "\n" + pf2 + "{cite:p}`A`\n"
+                yield o + "```\n" + pf + "ambiguous\n" + "> ```\n" + "{cite:p}`A`\n"
+
+
+class IndentedUnmatchedContinuationRefusal(unittest.TestCase):
+    """Fixed regression family: an indented non-blank line that matches only some of its open containers is
+    refused before any fence or paragraph state is lost (hardcoded, so CI needs no markdown parser)."""
+
+    REFUSED = [
+        "> - ```\n    > {cite:p}`A`\n> ```\n> ```\n",           # previously scanned 0, renders a paragraph
+        "> > normal payload\n    ```\n> > {cite:p}`A`\n    ```\n",  # multi-line inline code across the gap
+        "> - ```\n    ambiguous with no cite\n> ```\n> {cite:p}`A`\n",  # cite-free ambiguous line
+        "> - x\n\t{cite:p}`A`\n",
+        "> - ```\n\t> {cite:p}`A`\n> ```\n> ```\n",
+        ">\t- ```\n    > {cite:p}`A`\n>\t```\n",
+        "> > - ```\n      ambiguous\n> > ```\n> > {cite:p}`A`\n",
+        "> 1. ```\n     ambiguous\n> ```\n{cite:p}`A`\n",
+        "- > ```\n      ambiguous\n  > ```\n\n{cite:p}`A`\n",
+        "> a\n    ambiguous\n\n{cite:p}`A`\n",
+    ]
+
+    def test_refused_with_the_right_line(self):
+        for text in self.REFUSED:
+            with self.subTest(text=text):
+                with self.assertRaises(co._ScanFail) as ctx:
+                    co.scan_markdown(text)
+                self.assertEqual(ctx.exception.code, "unsupported_container_layout")
+                self.assertEqual(text.splitlines()[ctx.exception.line - 1].strip() != "", True)
+
+    def test_normal_same_container_layouts_stay_supported(self):
+        for text, n in [("> - ```\n>   {cite:p}`A`\n>   ```\n", 0), ("> x {cite:p}`A`\n", 1),
+                        ("- a\n  {cite:p}`A`\n", 1), ("- a\n    - b {cite:p}`A`\n", 1),
+                        ("> > a\n> > {cite:p}`A`\n", 1), ("```\n    {cite:p}`A`\n```\n", 0),
+                        ("> ```\n>     {cite:p}`A`\n> ```\n", 0), ("    {cite:p}`A`\n", 0),
+                        ("1. a\n\n   {cite:p}`A`\n", 1), ("> a\n> b `x\n> {cite:p}`A` y`\n", 0)]:
+            with self.subTest(text=text):
+                self.assertEqual(len(co.scan_markdown(text)), n)
 
 
 class NullableOptionalSchema(Tmp):

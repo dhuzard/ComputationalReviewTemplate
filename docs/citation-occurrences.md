@@ -76,14 +76,35 @@ included), `line_range` the one-based inclusive lines it touches.
 
 ## Scanner version and regeneration
 
-The scanner version is `comprev.citation_scanner/2` and is part of the revision hash. Version 2 fixes
+The scanner version is `comprev.citation_scanner/3` and is part of the revision hash. Version 2 fixed
 list-item continuation inside block quotes: the indentation a list item needs is stored and compared
 *relative to its parent container's content column* (tabs still stop at physical multiples of four),
-so a quote's leading spaces or `>` marker can no longer be mistaken for list indentation. Because the
-revision hash changes, every artifact produced by version 1 (snapshot, extraction, coverage,
-verdicts) is deliberately reported stale (`scanner_version_mismatch` / `stale_snapshot`) and is never
-upgraded in place. To regenerate: restart or reopen at Phase 15 so a new snapshot and extraction are
-written, then redo 15V and 16 against the new revision. Data schema versions are unchanged (same shape).
+so a quote's leading spaces or `>` marker can no longer be mistaken for list indentation.
+
+Version 3 closes a false-negative family. A non-blank line that is indented four or more columns past
+the content column of the containers it *does* match, while failing to match all of its open containers
+(quotes / list items), is where CommonMark renderers and this scanner could silently disagree about
+whether a fence, a paragraph or inline code continues. Version 2 could scan such input as zero
+citations while a renderer showed a paragraph containing a citation (for example
+`> - ` + a code fence, then an over-indented `> {cite:p}` line). The scanner now refuses it before any
+fence or paragraph state is closed, whether or not the line cites anything, with the diagnostic
+`unsupported_container_layout` (file and one-based line). This is intentionally fail-closed: the
+unsupported indented unmatched continuation is rejected, not interpreted. Repair the source (re-indent
+the line to match its containers, or add a blank line) and rescan. Same-container code payload stays
+opaque as before. This is an explicit refusal of a family of layouts, not an implementation of the whole
+of CommonMark, and it says nothing about scientific correctness.
+
+Because the revision hash changes, every artifact produced by version 1 or 2 (snapshot, extraction,
+coverage, verdicts) is deliberately reported stale (`scanner_version_mismatch` / `stale_snapshot`) and is
+never upgraded in place. To regenerate: reopen Phase 15 (or restart) so a new snapshot and extraction are
+written, then redo 15V and 16 against the new revision; version-2 artifacts require this explicit
+reopen and reverification. Data schema versions are unchanged (same shape).
+
+Evidence for the refusal rule is bounded, not a proof: during development the scanner was compared with
+the `markdown_it` CommonMark parser (a developer-only, optional test oracle; no runtime dependency) over
+a deterministic container/prefix matrix and seeded random inputs, with no case where the scanner
+succeeded and disagreed on the citation count; many inputs were refused. The test suite also pins a fixed
+set of regression layouts that run without any markdown parser.
 
 ## Files
 

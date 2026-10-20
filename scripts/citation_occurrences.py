@@ -35,7 +35,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
-SCANNER_VERSION = "comprev.citation_scanner/2"
+SCANNER_VERSION = "comprev.citation_scanner/3"
 OCC_SCHEMA = "comprev.citation_occurrences/1"
 VERDICT_SCHEMA = "comprev.citation_verification/1"
 COVERAGE_SCHEMA = "comprev.citation_coverage/1"
@@ -740,6 +740,13 @@ class _Doc:
                 para.append((li, s + i))
                 continue
             m, i, col, base = self._match(raw, open_)
+            if m < len(open_):
+                # renderers disagree on an indented line that matches only some open containers; refuse it
+                # before any fence/paragraph state is closed or lost, whether or not the line cites anything
+                j, c = _skip_ws(raw, i, col)
+                if raw[j:].strip() and c - base >= 4:
+                    raise _ScanFail("unsupported_container_layout",
+                                    "indented continuation does not match its open containers", li + 1)
             if stack and stack[-1]["kind"] in ("code", "include", "unknown") and stack[-1]["depth"] > m:
                 close_to(m)  # the container holding the fence ended: so did the fence
             top = stack[-1] if stack else None
@@ -783,10 +790,6 @@ class _Doc:
                 else:
                     kind = "prose"
             if m < len(open_):
-                if kind == "prose" and not new and para and ind >= 4 and stripped.startswith(">"):
-                    # an indented `>` under an unmatched list item: renderers disagree whether it is lazy text
-                    raise _ScanFail("unsupported_container_layout", "indented quote marker under a list item whose "
-                                    "continuation is ambiguous", li + 1)
                 if kind == "prose" and not new and para:
                     add_line(li, s + i2)  # lazy paragraph continuation: the containers stay open
                     continue

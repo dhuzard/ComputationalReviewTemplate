@@ -24,8 +24,8 @@
     {
       "name": "comprev-dataml-phases",
       "file": "skills/comprev-dataml-phases.md",
-      "bytes": 65683,
-      "sha256": "67af3c5a2f9074183f7c4937487d408a816c2029c7b1f93176297b9c788e3f65"
+      "bytes": 66454,
+      "sha256": "f94a19f9054d2704d9fc537d1c77b43b99f89f663d673a7b38f70cd37622acfb"
     },
     {
       "name": "comprev-deploy-polish",
@@ -48,8 +48,8 @@
     {
       "name": "comprev-figure-audit",
       "file": "skills/comprev-figure-audit.md",
-      "bytes": 8600,
-      "sha256": "b0c6c1b2b2694dda57962011e941fb77e16989d9c1bdd91e1b3dc092709abaaa"
+      "bytes": 9213,
+      "sha256": "ca0684d51c1db462eb7cf752c405f9af9ff133032b1aad281bdfdbfed1b13eda"
     },
     {
       "name": "comprev-figure-construction",
@@ -66,8 +66,8 @@
     {
       "name": "comprev-integration",
       "file": "skills/comprev-integration.md",
-      "bytes": 10233,
-      "sha256": "02a8c009d5a2003a05dbcd6f55009539c2f0bc8ee694d270d7f40b8cbe0d8188"
+      "bytes": 10808,
+      "sha256": "7ecc31e098efdaf1bcdfad7ec6aa7f85d134e530392df829e900c6da86202428"
     },
     {
       "name": "comprev-myst-validator",
@@ -78,8 +78,8 @@
     {
       "name": "comprev-orchestrator",
       "file": "skills/comprev-orchestrator.md",
-      "bytes": 47129,
-      "sha256": "a67cd80235de72fe5f22efe99ab032704abfdbf2319a518b375bd2a7e7a5a00b"
+      "bytes": 51129,
+      "sha256": "2a82a2038cb6ff80a0b3903709100d210e8f526067ef6328b32fa69742c2bc55"
     },
     {
       "name": "comprev-reviewer-agent",
@@ -90,8 +90,8 @@
     {
       "name": "comprev-scaffold",
       "file": "skills/comprev-scaffold.md",
-      "bytes": 3920,
-      "sha256": "01afc4f0cde6bc2fe56a142ee2fd43323cd54f399ac0363109faf5d953994886"
+      "bytes": 4047,
+      "sha256": "c603d49c92789116b8486aa17e9ee17f1c9cba95dd9f3613954bf95daf674d31"
     },
     {
       "name": "comprev-scoping-validator",
@@ -108,8 +108,8 @@
     {
       "name": "comprev-section-writing",
       "file": "skills/comprev-section-writing.md",
-      "bytes": 36797,
-      "sha256": "590b6a0a7a3a0a15265e4d8bba8f37476720eb7103234a0616493057eb20985a"
+      "bytes": 36946,
+      "sha256": "8b7d7abf789251e16c2da62aa37e86f68cc203fe14b4cce817548b1ea47ed090"
     },
     {
       "name": "comprev-triples-validator",

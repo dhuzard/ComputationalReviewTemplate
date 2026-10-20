@@ -306,7 +306,10 @@ Every conflict in the Phase 2 cluster evidence MUST appear in ≥1 per-section e
 
 **PREREQUISITE:**
 ```python
-require_phase('4b_critic')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import require_phase, check_gate
+require_phase('8')
 check_gate('gate_critic_complete.json')
 ```
 
@@ -345,7 +348,8 @@ For each match:
 
 **BibTeX ASCII requirement:** The final `.bib` file must be pure ASCII. Replace accented characters with LaTeX escapes (é → `{\'e}`, ü → `{\"u}`, ñ → `{\~n}`). Strip any remaining non-ASCII bytes. This is a hard compilation requirement — a single emoji or Unicode character can cause BibTeX to silently drop dozens of entries.
 
-**GATE ARTIFACT:** After bibliography is written, save `gate_bibliography.json`:
+**GATE ARTIFACT:** After bibliography is written, save the actor's summary as `provenance/bibliography_summary.json`
+(`gate_bibliography.json` is written only by the Phase 9V validator; the ledger reads that one):
 
 ```python
 gate_data = {
@@ -355,8 +359,11 @@ gate_data = {
     'ascii_clean':     True,
     'bhatt_contamination_matches': 0,   # from grep scan above
 }
-json.dump(gate_data, open('gate_bibliography.json', 'w'), indent=2)
-advance_phase('5_bibliography', '<saved_version_id>')
+json.dump(gate_data, open('provenance/bibliography_summary.json', 'w'), indent=2)
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+advance_phase('9', bib_vid, dataml_frame_ids)   # action receipt; Phase 10 waits for 9V
 ```
 
 
@@ -415,13 +422,14 @@ Phase-20 refresh has overwritten the values.
 import sys
 sys.path.insert(0, 'scripts')
 from frames_ledger import load_frames
+from phase_ledger import completed_phases
 methods_data = {
     'model_version': MODEL_ID,  # exact model id passed in by the coordinator; never hardcode
     'pipeline_version': json.load(open('provenance/pipeline_version.json'))['pipeline_version'],
     'snapshot_phase': 13,
     'snapshot_at': datetime.now(timezone.utc).isoformat(),
     'total_frames': len(load_frames()),
-    'phases_completed_at_draft_time': [p for p, v in phase_ledger.items() if v['status'] == 'complete'],
+    'phases_completed_at_draft_time': completed_phases(),   # canonical ids from the validated ledger
     'wall_clock_hours_at_draft_time': (datetime.now(timezone.utc) - first_frame_at).total_seconds() / 3600,
 }
 # Phase 13 MUST emit a `**Phases 14-20 (pending refresh).**` placeholder
@@ -501,7 +509,10 @@ gate_data = {
     'reproducibility_statement_present': True,
 }
 json.dump(gate_data, open('gate_methods.json', 'w'), indent=2)
-advance_phase('13_methods', '<saved_version_id>')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+advance_phase('13', gate_vid, dataml_frame_ids)   # gate_vid: version id of the saved gate file
 ```
 
 
@@ -1101,7 +1112,7 @@ for bulk uploads — it can push wrong file contents to multiple paths).
      `provenance/review_compatibility_report.template.json`
    - `scripts/review-compatibility-report.mjs`, `scripts/build_skill_manifest.py`,
      `scripts/check_prose_fidelity.py`, `scripts/check_template_consistency.py`,
-     `scripts/frames_ledger.py`, `scripts/skill_catalog.py`,
+     `scripts/frames_ledger.py`, `scripts/phase_ledger.py`, `scripts/skill_catalog.py`,
      `scripts/test_evidence_explorer.mjs`, `scripts/test_fixtures/`,
      `scripts/shared_style.py`
 5. **Verify file signatures** after copy:
@@ -1115,7 +1126,8 @@ for bulk uploads — it can push wrong file contents to multiple paths).
 7. `git add -A`, then run `git diff --cached --name-status --diff-filter=D` and
    abort the push if any scaffold-owned path from step 4 appears; only then
    `git commit && git push`
-8. Save gate_repository_push.json with file counts and signature check results
+8. Save `provenance/push_summary.json` with file counts and signature check results
+   (`gate_repository_push.json` is the Phase 20V validator's verdict, not this summary)
 
 **GATE ARTIFACT:** After all files are pushed:
 
@@ -1128,8 +1140,11 @@ gate_data = {
     'figures_pushed': figure_count,
     'notebooks_pushed': notebook_count,
 }
-json.dump(gate_data, open('gate_repository_push.json', 'w'), indent=2)
-advance_phase('14_github_push', '<saved_version_id>')
+json.dump(gate_data, open('provenance/push_summary.json', 'w'), indent=2)
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+advance_phase('20', pushed_commit_sha, dataml_frame_ids)   # receipt only; 20V writes gate_repository_push.json
 ```
 
 ---

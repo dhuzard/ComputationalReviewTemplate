@@ -174,13 +174,13 @@ Each phase transition requires a named gate artifact. The coordinator saves it b
 | 3 → 4 | `gate_citation_infrastructure.json` | citation_key_map VID (null blocks all downstream), DOI count, failures |
 | 4 → 5 | `gate_scaffold_approved.json` | Connections, cross-refs, conflicts represented, ≥2 figures/section |
 | 5 → 6 | `gate_evidence_curated.json` | Per-section paper count, anti-compression ≥75% |
-| 6 → 7 | `gate_figure_audit.json` | All verdicts, zero REDESIGN remaining, critic frame IDs |
+| 6 → 7 | `gate_figure_audit.json` | All verdicts, `redesign_remaining` = 0, `verdict_counts_post_resolution`, `critic_frame_ids` |
 | 7 → 8 | `gate_sections_drafted.json` | Per-section: artifact IDs, citation count, word count |
-| 8 → 9 | `gate_critic_complete.json` | MUST_FIX count = 0, SHOULD_CAVEAT count, conflict survival, coverage_review (per-uncited-paper classification), coverage_disputes (writer-waiver disagreements after 3 rounds) |
+| 8 → 9 | `gate_critic_complete.json` | `total_must_fix` = 0, SHOULD_CAVEAT count, conflict survival, coverage_review (per-uncited-paper classification), coverage_disputes (writer-waiver disagreements after 3 rounds) |
 | 9 → 10 | `gate_bibliography.json` | .bib artifact ID, entry count, failures |
 | 10 → 11 | `gate_integration.json` | Passes 10a-10f, filename mismatches, structural hygiene |
 | 11 → 12 | `gate_intro_conclusion.json` | Section artifact IDs, citation count |
-| 12 → 13 | `gate_bookend_critic.json` | MUST_FIX=0 on novel intro/conclusion citations |
+| 12 → 13 | `gate_bookend_critic.json` | `total_must_fix` = 0 on novel intro/conclusion citations |
 | 13 → 14 | `gate_methods.json` | Methods.md artifact ID, ledger sub-block populated |
 | 14 → 14V | (assembled manuscript) | LaTeX + content/*.md + figures + notebooks present |
 | 14V → 15 | `gate_assembly.json` | All build/structural assertions passed |
@@ -198,25 +198,68 @@ Each phase transition requires a named gate artifact. The coordinator saves it b
 
 ### Phase Ledger
 
+The ledger is `scripts/phase_ledger.py` (standard library, no LLM, no `assert`, so `python -O`
+cannot weaken it). State lives in `provenance/phase_ledger.json`. Phase ids are the strings in
+the Phase Index above, in that order: `1 1V 2 2V 3 3V 4 5 5V 6 7 7V 8 9 9V 10 11 12 13 14 14V 15
+15V 16 17 17V 18 19 19V 20a 20 20V 21`. Any other id raises `InvalidPhase`. Legacy ids from older
+skill text (`3_curation`, `5_bibliography`, ...) are only translated by
+`resolve_phase(old, allow_legacy=True)`; they are never accepted implicitly.
+
 ```python
-import json
-phase_ledger = {f'phase_{i}': {'status': 'pending', 'gate_artifact_id': None, 'child_ids': []}
-                for i in list(range(1, 22)) + ['20a']}
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import init_ledger, load_ledger, restart, advance_phase, require_phase, check_gate
 
-def advance_phase(phase_num, gate_artifact_id, child_ids=None):
-    key = f'phase_{phase_num}'
-    phase_ledger[key]['status'] = 'complete'
-    phase_ledger[key]['gate_artifact_id'] = gate_artifact_id
-    if child_ids:
-        phase_ledger[key]['child_ids'] = child_ids
-    json.dump(phase_ledger, open('phase_ledger.json', 'w'), indent=2)
-
-def require_phase(phase_num):
-    key = f'phase_{phase_num}'
-    assert phase_ledger[key]['status'] == 'complete', \
-        f"BLOCKED: Phase {phase_num} not complete."
-    return phase_ledger[key]['gate_artifact_id']
+init_ledger()   # ONCE per run, explicitly. Raises LedgerExists if a ledger is already there.
+restart()       # every later session: strict load + re-verification of every recorded gate
 ```
+
+`load_ledger()` and `restart()` never create or reset state. A missing file raises
+`LedgerMissing`; malformed, hand-edited or truncated state raises `LedgerCorrupt` and is left
+untouched. Stop and read `docs/phase-ledger.md` (recovery policy) instead of re-initialising.
+
+**Action completion is not approval.** An actor or critic phase is recorded with
+`advance_phase('2', artifact_id, child_ids)`; the validator phase `2V` is recorded only after its
+gate passes, and phase `3` refuses to start until `2V` is complete. Every call raises on failure
+and writes nothing:
+
+```python
+from phase_ledger import advance_phase, check_gate, require_phase  # as imported above
+
+advance_phase('7', writers_artifact_id, writer_frame_ids)                 # action receipt
+advance_phase('7V', gate_vid, validator_frame_ids)                        # reads gate_sections_drafted.json
+advance_phase('1V', gate_vid, validator_frame_ids, report=validator_result)  # verdict in the report
+audit_gate_vid = check_gate('gate_figure_audit.json')                     # pinned artifact id, or raises
+require_phase('9V')                                                        # artifact id of a finished phase
+```
+
+- `artifact_id` is the saved version id of the gate artifact (the main output for gateless
+  phases; the pushed commit sha for phase `20`). Placeholders such as `<saved_version_id>` are
+  rejected. `child_ids` are the agent frames that did the work; a validator's must differ from its
+  actor's, and Phase 8 / 12 critics' from the writers' (7 / 11).
+- The gate file is looked up in `provenance/` then the working directory, must exist, parse as a
+  single JSON object, and show the success its producer documents. It is bound to the receipt by
+  sha256: `check_gate` and `require_phase` re-read and re-validate it, so a gate edited or
+  deleted after approval blocks everything after it.
+- Validator-authored gates (`gate`, `gate_passed` or `verdict`) must carry the right `phase` and
+  pass, with no failed check or non-empty `failures`. `pass_with_deferred` is accepted only with
+  `allow_deferred=True`, `deferred_checks` and `tool_probe` (see Delegation Pattern);
+  `FAIL_REQUIRES_USER_SIGNOFF` only with a recorded `user_signoff` of `proceed`.
+- Phases 1V, 15V, 17V and 19V have no gate file carrying the verdict: pass the validator's
+  structured result as `report=`; its digest is recorded. 19V's report must carry
+  `section_md_vids_final`. Phases 15 and 17 additionally need `citation_triples.json` /
+  `fix_requests.json`, whose digests are recorded.
+- Coordinator/critic gates have a deterministic contract, no judgment: `gate_scaffold_approved`
+  (four booleans true), `gate_figure_audit` (`redesign_remaining == 0`,
+  `verdict_counts_post_resolution`, `critic_frame_ids`), `gate_critic_complete` and
+  `gate_bookend_critic` (`total_must_fix == 0`; the former also `coverage_review`),
+  `gate_integration` (the six passes), `gate_intro_conclusion` (empty `novel_citations`),
+  `gate_methods` (8 subsections), `gate_phase_20a_methods_refresh` (`forbidden_hits == 0`).
+- The ledger cannot judge scientific correctness or detect a forged gate. Validators stay
+  independent agents; the ledger only refuses to proceed without their recorded, intact verdict.
+- Concurrency: writes take a lock and reload; pass `expected_revision=ledger.revision` to be
+  rejected (`StaleLedger`) if another writer got in first. `reopen_phase(id, reason)` resets that
+  phase and everything after it (audited in `events`).
 
 ### Re-Read Protocol
 
@@ -225,13 +268,13 @@ Before executing ANY phase, the coordinator executes ONE Python cell that:
 1. **Reads the orchestrator phase section** from disk into a kernel variable (NOT via `read_file` tool call)
 2. **Extracts the delegation template** and compliance checklist into variables
 3. **Prints ONLY the compliance checklist** (~500 bytes) — not the full section text
-4. **Asserts the prerequisite phase** is complete in the ledger
+4. **Requires the prerequisite phase** to be complete in the ledger (`require_phase` raises; it is not an `assert`)
 
 This puts the full phase rules in kernel memory (usable for delegation templates) while adding only the checklist to the coordinator's context window. Cost: 1 message per phase, not 6.
 
 ```python
 # Example: Phase 7 re-read (SINGLE python cell)
-import json, os
+import json, os, sys
 
 # Read orchestrator into kernel memory (NOT into context)
 orch_path = os.path.expandvars(".../skills/orchestrator_v29.md")
@@ -250,9 +293,10 @@ print("  □ NO {authorship-explorer} (frontmatter only)")
 print("  □ ≥4.0 citations per synthesis paragraph")
 print("  □ Gate: word_count, citation_count, citations_per_paragraph, figures")
 
-# Assert prerequisite
-ledger = json.load(open('phase_ledger.json'))
-assert ledger['phase_6']['status'] == 'complete'
+# Prerequisite: Phase 6 complete, intact, and its gate re-validated (raises otherwise)
+sys.path.insert(0, 'scripts')
+from phase_ledger import require_phase
+require_phase('6')
 ```
 
 All three are tool calls, not Python functions. They produce visible output in context and cannot be stubbed.
@@ -262,7 +306,7 @@ All three are tool calls, not Python functions. They produce visible output in c
 - **No loops** in coordinator python cells. >5 iterations → delegate to DATAML.
 - **No API calls** in coordinator python cells. CrossRef, databases, repository APIs → DATAML.
 - **Inspection cells ≤20 lines.** Read JSON, check fields, print pass/fail.
-- **Gate checks ≤5 lines.** `host.artifacts(filename='gate_X.json')` + assert.
+- **Gate checks ≤5 lines.** `check_gate('gate_X.json')` (raises unless the registered gate is intact and passing; returns its pinned artifact id).
 - **Re-read the orchestrator before each phase.** This is the most important use of context.
 
 **No opportunistic phase completion:** When sending a follow-up to DATAML (e.g., 
@@ -291,10 +335,10 @@ A single session should not exceed ~120 messages. Break at gate boundaries:
 | C | 8–13 (Critics + Integration + Assembly) | `gate_assembly.json` |
 | D | 14–19 (Verification + Push) | `gate_repository_push.json` |
 
-**Handoff:** Save `phase_ledger.json` at session end. New session starts with `read_file` on plan + ledger + orchestrator section for current phase.
+**Handoff:** Save `provenance/phase_ledger.json` at session end (and call `restart()` when the next session begins). New session starts with `read_file` on plan + ledger + orchestrator section for current phase.
 
 **Enforcement:** At each session boundary, the coordinator MUST:
-1. Save phase_ledger.json as an artifact
+1. Save provenance/phase_ledger.json as an artifact
 2. Save a handoff context JSON with: current phase, pending child IDs, key VIDs
 3. If continuing in the same session (context allows), log a warning but proceed
 4. The re-read protocol (3 read_file calls) is MANDATORY regardless of session breaks
@@ -566,7 +610,7 @@ These require active coordinator vigilance. Each maps to specific phase enforcem
 
 | # | Failure Mode | Caught By | Coordinator Action |
 |---|---|---|---|
-| 1 | Phase skipping — marking phases complete without work | Gate artifacts, phase ledger | Assert gate exists before advancing |
+| 1 | Phase skipping — marking phases complete without work | Gate artifacts, phase ledger | `advance_phase` refuses out-of-order ids and missing/failing gates |
 | 2 | Self-auditing — writers reviewing their own work | Actor-critic frame ID checks | Verify critic IDs ≠ writer IDs after launching |
 | 4 | Context compression — losing enforcement rules mid-pipeline | Re-read protocol, session boundaries | `read_file` on orchestrator + plan at every phase boundary |
 | 5 | Plan step misassignment — coordinator steps orphaned in plan | Plan excludes coordinator | Plan phases use only DATAML and review agents |
@@ -575,6 +619,6 @@ These require active coordinator vigilance. Each maps to specific phase enforcem
 | 14 | Premature step completion — plan shows "completed" before child returns | Plan Step Status Protocol | `update_step_status("completed")` only after `wait_for_notification` returns + gate passes |
 | 15 | Context compaction corrupts delegation task — child gets compaction summary | Delegation Task Construction | Build task string + delegate in same cell; never rely on cross-cell string survival |
 | 16 | Unresolved interpolation in delegation task — child gets literal `{var}` | Delegation Task Construction | Verify task string resolves before delegating; use explicit variables, not inline list indexing |
-| 17 | Gate bypass — Phase N+1 runs after Phase N gate failed | Gate artifact assertion | `assert gate_passed is True` before any delegation for Phase N+1; never treat gate failure as "soft" |
+| 17 | Gate bypass — Phase N+1 runs after Phase N gate failed | `check_gate` / `require_phase` raise | Call `require_phase(<previous id>)` before any delegation for Phase N+1; never treat gate failure as "soft" |
 | 18 | Deferred check inherited as passed — a hard check never runs, downstream gates cite the upstream verdict | `pass_with_deferred` + re-test rule | Gate carries `deferred_checks`; each downstream gate re-runs what it can and records its own verdict; nothing reaches Phase 20 deferred |
 | 19 | Unsupported capability claim — "tool X is unavailable" taken on trust | `tool_probe` evidence | Every absence claim carries captured command output; probe all session environments, not just the active one |

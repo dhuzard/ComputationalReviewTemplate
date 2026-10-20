@@ -12,12 +12,15 @@ permissions:
 jobs:
   manifest:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.12']
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
       # Standard library only — no dependencies to install.
       - name: Verify skills/manifest.json matches skills/
@@ -28,3 +31,14 @@ jobs:
       # generation quoted consistently, referenced files present.
       - name: Template consistency audit
         run: python scripts/check_template_consistency.py
+
+      # Deterministic phase-ledger and helper tests; -O proves the ledger does
+      # not rely on `assert`.
+      - name: Python helper and phase-ledger tests
+        run: python -m unittest discover -s test -p 'test_*.py'
+
+      - name: Phase-ledger tests with assertions stripped
+        run: python -O -m unittest discover -s test -p 'test_phase_ledger.py'
+
+      - name: Prose-fidelity self-test
+        run: python scripts/check_prose_fidelity.py --self-test

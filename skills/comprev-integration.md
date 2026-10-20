@@ -17,8 +17,11 @@ Phase 10 (six-pass integration across all sections) and Phase 11 (Introduction, 
 
 **PREREQUISITE:**
 ```python
-require_phase('5_bibliography')
-check_gate('gate_bibliography.json')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import require_phase, check_gate
+require_phase('9V')                      # raises unless Phase 9V is complete and intact
+check_gate('gate_bibliography.json')     # raises unless the registered gate still passes
 ```
 
 Single agent reads all sections, performs:
@@ -70,7 +73,11 @@ gate_data = {
     'structural_issues': [...],    # from 6f
 }
 json.dump(gate_data, open('gate_integration.json', 'w'), indent=2)
-advance_phase('6_integration', '<saved_version_id>')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+# gate_vid: version id of the saved gate_integration.json; frame ids: the integrator child(ren)
+advance_phase('10', gate_vid, integrator_frame_ids)
 ```
 
 
@@ -82,7 +89,10 @@ advance_phase('6_integration', '<saved_version_id>')
 
 **PREREQUISITE:**
 ```python
-require_phase('6_integration')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import require_phase, check_gate
+require_phase('10')
 check_gate('gate_integration.json')
 ```
 
@@ -195,7 +205,10 @@ gate_data = {
     'master_citation_count': N,
 }
 json.dump(gate_data, open('gate_intro_conclusion.json', 'w'), indent=2)
-advance_phase('11_intro_conclusion', '<saved_version_id>')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+advance_phase('11', gate_vid, writer_frame_ids)   # gate_vid: version id of the saved gate file
 ```
 
 ## Output Hygiene

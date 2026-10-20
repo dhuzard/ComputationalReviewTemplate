@@ -17,7 +17,10 @@ Phase 6 delegation template for BLINDED figure auditors. Evaluate whether cross-
 
 **PREREQUISITE:**
 ```python
-require_phase('3_curation')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import require_phase, check_gate
+require_phase('5V')                      # curation validated; raises otherwise
 check_gate('gate_evidence_curated.json')
 ```
 
@@ -111,7 +114,18 @@ If a Phase 7 section writer's completion notification mentions 'audit', 'compara
 
 **GATE ARTIFACT:** After all verdicts are collected and REDESIGN figures are resolved, save `gate_figure_audit.json`:
 
-*(Save gate_figure_audit.json with verdict counts, zero REDESIGN remaining)*
+```python
+gate_data = {
+    'redesign_remaining': 0,                       # integer; any other value blocks Phase 7
+    'verdict_counts_post_resolution': {...},       # includes CAVEAT_FORCED_FROM_SPLIT / _REDESIGN
+    'critic_frame_ids': [...],                     # the blinded critic frames
+}
+json.dump(gate_data, open('gate_figure_audit.json', 'w'), indent=2)
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+advance_phase('6', gate_vid, critic_frame_ids)     # gate_vid: version id of the saved gate file
+```
 
 
 

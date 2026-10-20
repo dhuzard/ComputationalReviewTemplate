@@ -255,7 +255,15 @@ def discover(root):
     content = root / "content"
     if content.is_symlink() or not content.is_dir():
         return [], [diag("missing_source_root", "%s has no readable content/ directory (symlinks are refused)" % root)]
-    for dirpath, dirnames, filenames in os.walk(str(content), followlinks=False):
+    def walk_failed(err):
+        try:
+            where = Path(err.filename).relative_to(root).as_posix()
+        except (TypeError, ValueError):
+            where = str(err.filename or "content")
+        errors.append(diag("unreadable_source", "cannot list %s: %s; the sources there would be silently "
+                           "omitted" % (where, err.strerror or err), file=where))
+
+    for dirpath, dirnames, filenames in os.walk(str(content), followlinks=False, onerror=walk_failed):
         dirnames.sort()
         for d in list(dirnames):
             if os.path.islink(os.path.join(dirpath, d)):
@@ -298,6 +306,9 @@ _BACKTICK_FENCE_RE = re.compile(r"^(`{3,})([^`]*)$")
 _DIRECTIVE_RE = re.compile(r"^\{([^{}\s]+)\}[ \t]*(.*)$")
 _REFDEF_RE = re.compile(r"^\[(?!\^)(?:[^\]\\]|\\.)+\]:[ \t]*\S")
 _LIST_RE = re.compile(r"([-*+]|\d{1,9}[.)])([ \t]+|$)")
+_HEADING_RE = re.compile(r"#{1,6}(?:[ \t]|$)")
+_BREAK_RE = re.compile(r"([-*_])(?:[ \t]*\1){2,}$")
+_SETEXT_RE = re.compile(r"(?:=+|-+)$")
 _OPTION_RE = re.compile(r"^:([A-Za-z][\w\-]*):[ \t]*(.*)$")
 _TERMINATOR_RE = re.compile(r"\r\n|\n|\r")
 
@@ -354,36 +365,45 @@ class _Offsets:
         return self.bytes[li] + len(self.text[self.starts[li]:idx].encode("utf-8"))
 
 
-def _strip_containers(raw):
-    """Peel blockquote and list-item markers for classification only.
+def _skip_ws(raw, i, col):
+    """Advance over spaces/tabs from raw[i] at absolute column `col`; tabs stop at multiples of 4."""
+    n = len(raw)
+    while i < n and raw[i] in " \t":
+        col += (4 - col % 4) if raw[i] == "\t" else 1
+        i += 1
+    return i, col
 
-    Returns (body, body_col, container_col, list_marker) where list_marker is
-    (marker_start_col, content_col) for the last list marker consumed, else None.
+
+def _quote_step(raw, j, c):
+    """After a `>` at raw[j] (column c): (resume_index, resume_col, content_base_col)."""
+    nxt = raw[j + 1:j + 2]
+    if nxt == " ":
+        return j + 2, c + 2, c + 2
+    if nxt == "\t":
+        return j + 1, c + 1, c + 2
+    return j + 1, c + 1, c + 1
+
+
+def _list_start(raw, j, c):
+    """A list marker at raw[j] (column c): (content_col, resume_index, resume_col, may_interrupt) or None.
+
+    Four or fewer columns after the marker put the content at the first non-blank column; five or more
+    (or none) put it one column after the marker, so any further indentation is indented code.
     """
-    n, i, col, base, marker = len(raw), 0, 0, 0, None
-    while True:
-        j, c = i, col
-        while j < n and raw[j] in " \t":
-            c += (4 - c % 4) if raw[j] == "\t" else 1
-            j += 1
-        if j < n and raw[j] == ">" and c - base < 4:
-            i, col = j + 1, c + 1
-            if i < n and raw[i] == " ":
-                i, col = i + 1, col + 1
-            base, marker = col, None
-            continue
-        m = _LIST_RE.match(raw, j) if c - base < 4 else None
-        if m and not (m.group(1) in "-*+" and re.fullmatch(r"([-*+])(?:[ \t]*\1){2,}[ \t]*", raw[j:])):
-            width = len(m.group(2).replace("\t", "    ")) if m.group(2) else 1
-            width = 1 if width >= 5 else max(width, 1)
-            content_col = c + len(m.group(1)) + width
-            marker = (c, content_col)
-            i = m.end() if width < 5 else j + len(m.group(1)) + 1
-            col = base = content_col
-            if i >= n:
-                return "", col, base, marker
-            continue
-        return raw[j:], c, base, marker
+    m = _LIST_RE.match(raw, j)
+    if not m:
+        return None
+    marker = m.group(1)
+    if marker in ("-", "*", "+") and re.fullmatch(r"([-*+])(?:[ \t]*\1){2,}[ \t]*", raw[j:]):
+        return None
+    mend, mcol = j + len(marker), c + len(marker)
+    j2, c2 = _skip_ws(raw, mend, mcol)
+    if not raw[j2:].strip():
+        return mcol + 1, len(raw), mcol + 1, False
+    interrupts = marker in ("-", "*", "+") or int(marker[:-1]) == 1
+    if c2 - mcol >= 5:
+        return mcol + 1, mend, mcol, interrupts
+    return c2, j2, c2, interrupts
 
 
 def _has_cite_syntax(s):
@@ -540,7 +560,7 @@ class _Doc:
         self.off = _Offsets(text, self.lines)
         self.found = []
 
-    # -- paragraph handling
+    # -- paragraph handling (a paragraph is one block inside one container path)
     def _scan_para(self, para):
         pieces = [(start, self.text[start:self.lines[li][1]]) for li, start in para]
         mapper = _Mapper(self.off, pieces)
@@ -549,8 +569,10 @@ class _Doc:
 
     def _flush(self, para):
         if not para:
-            return False
+            return
         inline, mapper = self._scan_para(para)
+        if inline.open_comment:
+            raise _ScanFail("unterminated_comment", "HTML comment is never closed", para[0][0] + 1)
         for name, idx, key, vs, ve in inline.out:
             rs, re_ = mapper.real(vs), mapper.real(ve - 1) + 1
             l1, l2 = self.off.line_of(rs), self.off.line_of(re_ - 1)
@@ -558,10 +580,14 @@ class _Doc:
             self.found.append({"directive_kind": name, "key_index": idx, "citation_key": key,
                                "byte_span": [self.off.byte_of(rs), self.off.byte_of(re_)],
                                "line_range": [l1 + 1, l2 + 1], "context": context})
-        return inline.open_comment
 
     def _comment_open(self, para):
-        return bool(para) and self._scan_para(para)[0].open_comment
+        """True if the paragraph so far ends inside an unclosed HTML comment (role errors are left to the
+        final flush, which reports them with the complete paragraph)."""
+        try:
+            return bool(para) and self._scan_para(para)[0].open_comment
+        except _ScanFail:
+            return False
 
     # -- includes
     def _include(self, arg, option_lines, opener_line):
@@ -617,6 +643,58 @@ class _Doc:
     def _is_closer(stripped, top):
         return re.fullmatch(re.escape(top["char"]) + "{%d,}" % top["len"], stripped) is not None
 
+    @staticmethod
+    def _match(raw, open_, limit=None):
+        """Match the open containers (quote / list item) against one line.
+
+        Returns (matched_count, index, column, content_base_col). A blank line matches list items only.
+        """
+        n, i, col, base, m = len(raw), 0, 0, 0, 0
+        for ct in (open_ if limit is None else open_[:limit]):
+            j, c = _skip_ws(raw, i, col)
+            blank = not raw[j:].strip()
+            if ct["t"] == "q":
+                if blank or raw[j] != ">" or c - base >= 4:
+                    break
+                i, col, base = _quote_step(raw, j, c)
+            else:
+                if blank:
+                    i, col = n, c
+                elif c >= ct["cc"]:
+                    while i < n and col < ct["cc"] and raw[i] in " \t":
+                        col += (4 - col % 4) if raw[i] == "\t" else 1
+                        i += 1
+                    base = ct["cc"]
+                else:
+                    break
+            m += 1
+        return m, i, col, base
+
+    @staticmethod
+    def _open_new(raw, i, col, base, restricted):
+        """Container starts (quote / list item) at the current position; restricted = a paragraph is open
+        right here, which only a bullet or `1.` item may interrupt."""
+        new, n = [], len(raw)
+        while True:
+            j, c = _skip_ws(raw, i, col)
+            if j >= n or c - base >= 4:
+                break
+            if raw[j] == ">":
+                i, col, base = _quote_step(raw, j, c)
+                new.append({"t": "q"})
+                continue
+            ls = _list_start(raw, j, c)
+            if ls is None or (restricted and not new and not ls[3]):
+                break
+            cc, i, col, _ = ls
+            base = cc
+            new.append({"t": "l", "cc": cc})
+        return new, i, col, base
+
+    def _close_entry(self, entry):
+        if entry["kind"] == "include":
+            self._include(entry["arg"], entry["lines"], entry["line"])
+
     def scan(self, skip_frontmatter=True):
         text, lines = self.text, self.lines
         li0 = 0
@@ -629,85 +707,108 @@ class _Doc:
                 raise _ScanFail("citation_in_frontmatter", "front matter contains citation syntax, which "
                                 "is not extracted", 1)
             li0 = end + 1
-        stack, para, list_stack = [], [], []
-        prev_blank, prev_icode = True, False
+        stack, para, open_ = [], [], []
+        st = {"depth": 0, "html": False}  # container depth the paragraph lives in; "<!--" seen in it
+
+        def end_para():
+            self._flush(para)
+            del para[:]
+            st["html"] = False
+
+        def close_to(m):
+            end_para()
+            while stack and stack[-1]["depth"] > m:
+                self._close_entry(stack.pop())
+            del open_[m:]
+
+        def add_line(li, start):
+            if not para:
+                st["depth"] = len(open_)
+            para.append((li, start))
+            st["html"] = st["html"] or "<!--" in text[start:lines[li][1]]
+
         for li in range(li0, len(lines)):
             s, e = lines[li]
             raw = text[s:e]
-            if not raw.strip():
-                if self._comment_open(para):
-                    para.append((li, s))
-                    continue
-                self._flush(para)
-                para, prev_blank, prev_icode = [], True, False
+            if st["html"] and para and self._comment_open(para):
+                # an unclosed HTML comment swallows lines, but only while its own containers continue
+                m, i, _, _ = self._match(raw, open_, st["depth"])
+                if m < st["depth"]:
+                    raise _ScanFail("unterminated_comment", "an HTML comment is still open when its quote or "
+                                    "list item ends", li + 1)
+                para.append((li, s + i))
                 continue
-            body, col, base, marker = _strip_containers(raw)
-            stripped = body.strip()
+            m, i, col, base = self._match(raw, open_)
+            if stack and stack[-1]["kind"] in ("code", "include", "unknown") and stack[-1]["depth"] > m:
+                close_to(m)  # the container holding the fence ended: so did the fence
             top = stack[-1] if stack else None
             if top and top["kind"] in ("code", "include", "unknown"):
-                if self._is_closer(stripped, top):
-                    stack.pop()
-                    if top["kind"] == "include":
-                        self._include(top["arg"], top["lines"], top["line"])
-                    prev_blank = True
+                # fence payload is opaque: only a same-container closer counts, nothing in it is parsed
+                j, c = _skip_ws(raw, i, col)
+                stripped = raw[j:].strip()
+                if c - base < 4 and self._is_closer(stripped, top):
+                    self._close_entry(stack.pop())
                 elif top["kind"] == "include":
-                    top["lines"].append(raw)
-                elif top["kind"] == "unknown" and _has_cite_syntax(raw):
+                    top["lines"].append(raw[i:])
+                elif top["kind"] == "unknown" and _has_cite_syntax(raw[i:]):
                     raise _ScanFail("unsupported_directive_citation",
                                     "citation syntax inside the unsupported directive {%s}" % top["name"], li + 1)
                 continue
-            if marker:
-                while list_stack and list_stack[-1] > marker[0]:
-                    list_stack.pop()
-                list_stack.append(marker[1])
-            elif prev_blank:
-                while list_stack and col < list_stack[-1]:
-                    list_stack.pop()
-            if list_stack and col >= list_stack[-1] and not marker:
-                base = max(base, list_stack[-1])
-            fm = _FENCE_RE.match(stripped)
-            if fm and fm.group(1)[0] == "`" and not _BACKTICK_FENCE_RE.match(stripped):
-                fm = None
-            if (prev_blank or prev_icode) and col - base >= 4 and not marker:
-                kind = "icode"
-            elif top and top["kind"] == "prose" and self._is_closer(stripped, top):
-                kind = "closer"
-            elif fm:
-                kind = "fence"
-            elif _REFDEF_RE.match(stripped) and not marker:
-                kind = "refdef"
-            elif stripped.startswith("%"):
-                kind = "percent"
+            new, i2, col2, base2 = self._open_new(raw, i, col, base, bool(para) and m == len(open_))
+            j, c = _skip_ws(raw, i2, col2)
+            stripped = raw[j:].strip()
+            ind, fm = c - base2, None
+            para_alive = bool(para) and not new
+            if not stripped:
+                kind = "blank"
+            elif ind >= 4:
+                kind = "prose" if para_alive else "icode"
             else:
-                kind = "prose"
-            if kind != "prose" and self._comment_open(para):
-                para.append((li, s))  # still inside an unclosed HTML comment
-                continue
-            prev_icode = kind == "icode"
+                fm = _FENCE_RE.match(stripped)
+                if fm and fm.group(1)[0] == "`" and not _BACKTICK_FENCE_RE.match(stripped):
+                    fm = None
+                if top and top["kind"] == "prose" and not new and m >= top["depth"] and self._is_closer(stripped, top):
+                    kind = "closer"
+                elif fm:
+                    kind = "fence"
+                elif _HEADING_RE.match(stripped):
+                    kind = "heading"
+                elif _BREAK_RE.match(stripped) or (para_alive and _SETEXT_RE.match(stripped)):
+                    kind = "break"
+                elif _REFDEF_RE.match(stripped) and not any(c_["t"] == "l" for c_ in new):
+                    kind = "refdef"
+                elif stripped.startswith("%"):
+                    kind = "percent"
+                else:
+                    kind = "prose"
+            if m < len(open_):
+                if kind == "prose" and not new and para:
+                    add_line(li, s + i2)  # lazy paragraph continuation: the containers stay open
+                    continue
+                close_to(m)
+            elif new:
+                end_para()
+            open_.extend(new)
             if kind == "prose":
-                para.append((li, s))
-                prev_blank = False
+                add_line(li, s + i2)
                 continue
-            self._flush(para)
-            para = []
-            if kind == "icode":
-                prev_blank = False
-            elif kind == "closer":
+            end_para()
+            if kind == "closer":
                 stack.pop()
-                prev_blank = True
             elif kind == "fence":
-                stack.append(self._open_fence(fm, li, s, raw))
-                prev_blank = False
-            else:
+                entry = self._open_fence(fm, li, s, raw)
+                entry["depth"] = len(open_)
+                stack.append(entry)
+            elif kind == "heading":
+                self._flush([(li, s + j)])
+            elif kind in ("refdef", "percent"):
                 if _has_cite_syntax(raw):
                     code, msg = (("citation_in_reference_definition", "citation syntax in a link reference "
                                   "definition") if kind == "refdef" else
                                  ("citation_in_comment_line", "a % comment line contains citation syntax; "
                                   "delete it or use an HTML comment"))
                     raise _ScanFail(code, msg, li + 1)
-                prev_blank = False
-        if self._flush(para):
-            raise _ScanFail("unterminated_comment", "HTML comment is never closed", para[0][0] + 1)
+        end_para()
         if stack:
             raise _ScanFail("unterminated_fence", "fence or directive opened on line %d is never closed"
                             % stack[-1]["line"], stack[-1]["line"])
@@ -929,14 +1030,16 @@ def _validate_record_shape(rec, n):
     if "bib_entry" in rec:
         be = rec["bib_entry"]
         if not (isinstance(be, dict) and set(be) == {"file", "byte_span", "text"} and isinstance(be["text"], str)
-                and isinstance(be["file"], str) and isinstance(be["byte_span"], list)):
-            bad("bib_entry", "must be {file, byte_span, text}")
+                and isinstance(be["file"], str) and isinstance(be["byte_span"], list) and len(be["byte_span"]) == 2
+                and all(_int(x) and x >= 0 for x in be["byte_span"])):
+            bad("bib_entry", "must be {file, byte_span: [start, end], text}")
     return out
 
 
 def _core(rec):
+    """The fields compared with the rescan: every required field, plus an optional one only if submitted."""
     keys = list(OCC_REQUIRED) + [k for k in ("context", "bib_entry") if k in rec]
-    return {k: rec.get(k) for k in keys}
+    return {k: rec[k] for k in keys}
 
 
 def _source_diffs(submitted, scan):
@@ -1023,7 +1126,7 @@ def check_inventory(data, scan, label="inventory"):
                       file=r["relative_file"]))
     for oid in sorted(set(got) & set(expected)):
         a, b = _core(got[oid]), expected[oid]
-        bad = sorted(k for k in set(a) | set(b) if k not in ("claimed_finding",) and a.get(k) != b.get(k))
+        bad = sorted(k for k in a if a[k] != b.get(k))
         if bad:
             d.append(diag("occurrence_mismatch", "fields differ from the rescan: " + ", ".join(bad),
                           occurrence_id=oid, file=b["relative_file"], line=b["line_range"][0]))
@@ -1102,9 +1205,14 @@ def _check_evidence(root, ev, occ, verdict, verified):
         err("metadata_only_not_valid", "metadata_only is never valid verification depth")
     elif depth not in DEPTHS:
         err("malformed_evidence", "evidence.depth %r must be fulltext or abstract_only" % (depth,))
-    elif depth == "abstract_only" and not _nonempty(ev.get("fulltext_unavailable_reason")):
+    reason = ev.get("fulltext_unavailable_reason")
+    if "fulltext_unavailable_reason" in ev and not isinstance(reason, str):
+        err("malformed_evidence", "evidence.fulltext_unavailable_reason must be a string when present")
+    elif depth == "abstract_only" and not _nonempty(reason):
         err("fulltext_fallback_unexplained", "abstract_only evidence must state why full text was unavailable "
             "(fulltext_unavailable_reason)")
+    elif reason == "":
+        err("malformed_evidence", "evidence.fulltext_unavailable_reason must not be empty when present")
     if ev["citation_key"] != occ["citation_key"]:
         err("evidence_key_mismatch", "evidence.citation_key %r != occurrence key %r"
             % (ev["citation_key"], occ["citation_key"]))
@@ -1247,7 +1355,7 @@ def check_verdicts(root, data, scan):
     done = set()
     for v in verdicts:
         oid = v.get("occurrence_id") if isinstance(v, dict) else None
-        if oid in expected and oid not in done:
+        if _hex(oid) and oid in expected and oid not in done:
             done.add(oid)
             d.extend(_check_one_verdict(root, v, expected[oid], scan.revision))
     return d
@@ -1337,13 +1445,17 @@ def verify_snapshot(snap):
     on_disk = set()
     if files_root.is_symlink() or not files_root.is_dir():
         _fail("snapshot_missing", "%s/files is missing" % snap)
-    for dirpath, dirnames, filenames in os.walk(str(files_root), followlinks=False):
+    walk_errors = []
+    for dirpath, dirnames, filenames in os.walk(str(files_root), followlinks=False, onerror=walk_errors.append):
         for name in dirnames + filenames:
             full = Path(dirpath, name)
             if full.is_symlink():
                 _fail("symlink_refused", "snapshot contains a symlink: %s" % full.relative_to(files_root).as_posix())
         for name in filenames:
             on_disk.add(Path(dirpath, name).relative_to(files_root).as_posix())
+    if walk_errors:
+        raise CitationError([diag("unreadable_snapshot", "cannot list %s: %s; the snapshot would be silently "
+                                  "incomplete" % (err.filename, err.strerror or err)) for err in walk_errors])
     listed = {s["path"] for s in srcs}
     d = [diag("snapshot_file_unlisted", "%s is in the snapshot but not in its manifest" % p, file=p)
          for p in sorted(on_disk - listed)]
@@ -1527,6 +1639,8 @@ def main(argv=None):
         return _emit(audit_historical(root, a.snapshot))
     except CitationError as e:
         return _emit(report(a.command, e.diagnostics))
+    except Exception as e:  # fail closed with a diagnostic, never a bare traceback on an empty stdout
+        return _emit(report(a.command, [diag("internal_error", "%s: %s" % (type(e).__name__, e))]))
 
 
 if __name__ == "__main__":

@@ -26,8 +26,10 @@ mechanical fact) is kept separate from *support* (a judgment).
 (`provenance/review_request.md` with `:start-after:` / `:end-before:`) is supported; the included
 file joins the revision, and a citation inside an included region is refused (`citation_in_include`)
 rather than lost. Generated LaTeX mirrors are not scanned. A missing `content/` directory, a symlink
-(file, directory or include), invalid UTF-8, a byte-order mark, an unreadable file or a path that
-leaves the repository fails.
+(file, directory or include), invalid UTF-8, a byte-order mark, an unreadable file **or an
+unreadable directory** (a subtree that cannot be listed is `unreadable_source`, never silently
+omitted; the same holds for the snapshot walk, `unreadable_snapshot`) or a path that leaves the
+repository fails.
 
 **Extracted:** `{cite:p}` and `{cite:t}` in active prose, including headings, lists, blockquotes,
 tables, captions, link labels, footnotes, prose directive bodies (`note`, `warning`, `figure`,
@@ -41,6 +43,18 @@ directive titles (`admonition`, ...). One record per key: `{cite:p}`A, B`` is tw
 front matter, `\{cite:p}` escapes. When it is ambiguous whether text is code, it is scanned as prose
 (a 4-space-indented paragraph inside a list item is prose), so the failure mode is an extra occurrence
 that needs a verdict, never a silently lost one.
+
+**Blocks and containers.** Inline code and roles are matched inside one block only: a heading, a
+list item (each item, including siblings), a block quote, a thematic break or a setext underline ends
+the paragraph, so a stray backtick cannot reach across it, while soft line breaks inside one
+paragraph still pair code spans as CommonMark does (`` `a\n{cite:p}`A` `` is one code span and is
+correctly not a citation). Block quotes and list items are tracked as a container stack with
+CommonMark's indentation rules (tabs stop at multiples of four; a list marker followed by five or more
+columns, e.g. ``-     {cite:p}`A` ``, starts indented code, one to four columns is prose). A fence belongs
+to the container that opened it: it closes only on a same-container closing fence (indented fewer than
+four columns past the container) or when that quote/list item ends, and its payload is never parsed
+for quote or list markers. A lazy continuation line keeps a paragraph open. An HTML comment that is
+still open when its quote or list item ends is refused (`unterminated_comment`) instead of guessed.
 
 **Refused (fail closed, JSON diagnostic with file and line):** other cite roles (`{cite:ps}`,
 `{cite:author}`, ...), `{cite:p}` without a backtick key list, `[@key]` and bare `@key`, empty or
@@ -74,7 +88,8 @@ The extraction envelope is `{schema_version, scanner_version, manuscript_revisio
 occurrence_count, extraction_digest, occurrences[]}`; each occurrence has exactly the nine core fields
 `schema_version, manuscript_revision, occurrence_id, relative_file, byte_span, line_range,
 directive_kind, key_index, citation_key`, plus optional `context` (verbatim lines) and `bib_entry`
-(exact entry text and location), both compared against the rescan when present, and an optional
+(exact entry text and location), both optional and compared against the rescan only when present
+(every required field is always compared exactly; an omitted `context`/`bib_entry` is valid), and an optional
 advisory `claimed_finding` (never a mechanical fact, never compared). The schema files describe
 structure and are kept in step with the runtime by tests; equality with the manuscript is checked at
 runtime by rescanning. Zero citations is valid but must be an explicit, complete inventory
@@ -88,11 +103,15 @@ Each verdict keeps the Phase 16 fields (`cite_key`, `category`, `failed_at_step`
 * `VERIFIED` needs `failed_at_step: null`, `verification_depth` `fulltext` or `abstract_only`,
   `evidence.status: "available"` with the same depth, a `path` under `provenance/citation_evidence/`,
   the file's `sha256`, and `supporting_passage` equal to the file bytes at `passage_span`
-  (UTF-8 byte offsets); abstract fallback needs `fulltext_unavailable_reason`; the attestation must be
+  (UTF-8 byte offsets); abstract fallback needs `fulltext_unavailable_reason`, which must be a non-empty string whenever it is
+  present, at any depth (the schema enforces both); the attestation must be
   `{protocol: "comprev-verification/phase-16", steps_completed: [1,2,3,4,5], attested_by}`.
 * `unavailable` / `unverifiable` evidence, an unknown status, `metadata_only` and a missing,
   tampered, mismatched or out-of-range evidence file can never be VERIFIED. A non-VERIFIED verdict may
   omit evidence if `details` explains the manual review needed.
+* A verdict whose `occurrence_id` is not a 64-hex string (`[]`, `{}`, `true`, `null`, a number, any
+  other string) is a `malformed_verdict` diagnostic, never a crash; any unexpected internal error is
+  reported as an `internal_error` JSON diagnostic with exit 1.
 * Unknown fields, wrong JSON types (a `true` where an integer is required), duplicate JSON keys,
   `NaN`, a byte-order mark and an unsupported `schema_version` are rejected.
 
@@ -132,7 +151,7 @@ Staleness: `stale_revision`, `stale_snapshot`, `source_added`, `source_removed`,
 `snapshot_file_unlisted`, `snapshot_file_missing`, `snapshot_rescan_mismatch`, `coverage_missing`,
 `coverage_mismatch`, `report_not_bound`. Sources: `missing_source_root`, `symlink_refused`,
 `invalid_utf8`, `bom_not_allowed`, `unreadable_source`, `source_too_large`, `path_escape`,
-`bib_parse_error`, `invalid_bib_key`, `duplicate_bib_key`, `unresolved_bib_key`, and the scanner
+`unreadable_snapshot`, `internal_error`, `bib_parse_error`, `invalid_bib_key`, `duplicate_bib_key`, `unresolved_bib_key`, and the scanner
 refusals `unsupported_cite_role`, `malformed_cite_role`, `unterminated_role`, `empty_key`,
 `invalid_key`, `unterminated_fence`, `unterminated_comment`, `unterminated_frontmatter`,
 `citation_in_frontmatter`, `citation_in_include`, `citation_in_comment_line`,
@@ -141,7 +160,7 @@ refusals `unsupported_cite_role`, `malformed_cite_role`, `unterminated_role`, `e
 
 ## Limitations
 
-* The scanner is a conservative line/inline state machine, not a full CommonMark/MyST parser. A
+* The scanner is a conservative line/container/inline state machine, not a full CommonMark/MyST parser. A
   construct it cannot classify is either refused or scanned as prose; it never guesses "code" to make
   an occurrence disappear.
 * HTML blocks, math, and `csv-table`-style directives are not interpreted: a role inside them is

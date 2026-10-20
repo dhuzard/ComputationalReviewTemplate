@@ -44,8 +44,12 @@
         "path": {"type": "string", "pattern": "^provenance/citation_evidence/.+"},
         "sha256": {"$ref": "#/$defs/sha256"},
         "passage_span": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}, "description": "zero-based half-open byte offsets of supporting_passage in the evidence file"},
-        "fulltext_unavailable_reason": {"type": "string", "minLength": 1, "description": "required when depth is abstract_only"}
-      }
+        "fulltext_unavailable_reason": {"type": "string", "minLength": 1, "description": "required when depth is abstract_only; a string whenever present"}
+      },
+      "allOf": [
+        {"if": {"required": ["depth"], "properties": {"depth": {"const": "abstract_only"}}},
+         "then": {"required": ["fulltext_unavailable_reason"]}}
+      ]
     },
     "evidence_unavailable": {
       "type": "object",

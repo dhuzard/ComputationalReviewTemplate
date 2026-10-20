@@ -1339,6 +1339,76 @@ class CitationContract(Env):
         pl.advance_phase("16", "vid-16", ["frame-l"], root=self.root)
         self.assertEqual(pl.restart(self.root).next_phase, "17")
 
+    # -- an inventory that omits a visible citation can never be admitted (block/container scanner repairs)
+    def hidden_cite_manuscript(self):
+        (self.tmp / "content").mkdir(exist_ok=True)
+        (self.tmp / "content/refs.bib").write_text("@misc{A, title={A}}\n")
+        (self.tmp / "content/claim.md").write_text("`literal\n# Claim {cite:p}`A`\n")
+
+    def empty_artifacts(self, scan):
+        """What a scanner that missed the visible citation would have written (zero occurrences)."""
+        inv = scan.inventory()
+        inv.update(occurrences=[], occurrence_count=0, extraction_digest=co.sha256_hex(co.canonical_bytes([])))
+        return inv
+
+    def test_visible_citation_after_a_stray_backtick_is_extracted_and_an_empty_inventory_is_refused(self):
+        self.hidden_cite_manuscript()
+        co.create_snapshot(self.root, supersede=True)
+        scan = co.scan_sources(self.root)
+        self.assertEqual([o["citation_key"] for o in scan.occurrences], ["A"])
+        tco.write_json(self.root, co.EXTRACTION, self.empty_artifacts(scan))
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["missing_occurrence"])
+
+    def test_empty_coverage_and_empty_verdicts_cannot_follow_an_omitted_visible_citation(self):
+        self.hidden_cite_manuscript()
+        self.advance("15")
+        scan = co.scan_sources(self.root)
+        self.assertEqual(len(scan.occurrences), 1)
+        # 15V: a coverage file computed from the empty inventory, honestly bound to a validator report
+        doc = co._coverage_doc(scan, b"{}", b"{}")
+        doc.update(occurrence_count=0, key_count=0, extraction_digest=co.sha256_hex(co.canonical_bytes([])))
+        data = co.json_text(doc).encode("utf-8")
+        co.write_atomic(self.tmp / co.COVERAGE, data)
+        bound = dict(report_for("15V"), citation_coverage_sha256=co.sha256_hex(data),
+                     manuscript_revision=scan.revision, occurrence_count=0)
+        ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=bound, root=self.root),
+                             pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["coverage_mismatch"])
+        self.advance("15V")
+        # 16: an empty, self-consistent verdict list for the empty inventory
+        env = co.assemble_verification(scan, [])
+        env["extraction_digest"] = co.sha256_hex(co.canonical_bytes([]))
+        tco.write_json(self.root, co.VERIFICATION, env)
+        ctx = self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root), pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["extraction_digest_mismatch", "missing_verdict"])
+        tco.write_json(self.root, co.VERIFICATION, co.assemble_verification(scan, []))
+        ctx = self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root), pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["missing_verdict"])
+        self.assertEqual(pl.load_ledger(self.root).next_phase, "16")
+
+    def test_unreadable_subtree_blocks_every_citation_phase_and_leaves_state_untouched(self):
+        self.manuscript()
+        self.advance("15")
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
+        (self.tmp / "content/private").mkdir()
+        (self.tmp / "content/private/hidden.md").write_text("Hidden {cite:p}`Smith2020`.\n")
+        real, blocked = os.scandir, str(self.tmp / "content/private")
+
+        def scandir(path=".", *a, **k):
+            if os.fspath(path) == blocked:
+                raise PermissionError(13, "Permission denied", blocked)
+            return real(path, *a, **k)
+
+        with mock.patch.object(os, "scandir", scandir):
+            ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=bound, root=self.root),
+                                 pl.CitationGateError)
+            self.assertIn("unreadable_source", self.codes(ctx))
+            ctx = self.unchanged(lambda: pl.restart(self.root), pl.CitationGateError)
+            self.assertIn("unreadable_source", self.codes(ctx))
+            ctx = self.unchanged(lambda: pl.require_phase("15", self.root), pl.CitationGateError)
+            self.assertIn("unreadable_source", self.codes(ctx))
+
 
 class DocumentedSkillUsage(unittest.TestCase):
     def test_every_skill_call_uses_canonical_ids_known_gates_and_an_import(self):

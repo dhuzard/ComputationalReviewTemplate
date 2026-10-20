@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -1091,6 +1092,10 @@ def schema_errors(inst, schema, root, path="$"):
         ok = [s for s in schema["oneOf"] if not schema_errors(inst, s, root, path)]
         return [] if len(ok) == 1 else ["%s: matches %d of oneOf" % (path, len(ok))]
     err = []
+    for sub in schema.get("allOf", []):
+        err += schema_errors(inst, sub, root, path)
+    if "if" in schema and not schema_errors(inst, schema["if"], root, path):
+        err += schema_errors(inst, schema.get("then", {}), root, path)
     if "const" in schema and inst != schema["const"]:
         err.append("%s: const" % path)
     if "enum" in schema and inst not in schema["enum"]:
@@ -1209,6 +1214,340 @@ class SchemaMatchesRuntime(Tmp):
             bad = ver(f)
             self.assertNotEqual(schema_errors(bad, self.ver, self.ver), [])
             self.assertNotEqual(co.check_verdicts(self.root, bad, co.scan_sources(self.root)), [])
+
+
+
+# ------------------------------------------------- block / container repairs
+class ScannerBlockRepairs(unittest.TestCase):
+    """Inline matching is block-local; fences belong to the container that opened them."""
+
+    CASES = [
+        # (text, expected keys): a stray backtick must not reach across a block boundary
+        ("`literal\n# Claim {cite:p}`A`\n", ["A"]),
+        ("- `literal\n- Claim {cite:p}`A`\n", ["A"]),
+        ("1. `literal\n2. Claim {cite:p}`A`\n", ["A"]),
+        ("> `literal\n> # Claim {cite:p}`A`\n", ["A"]),
+        ("> `literal\n\nClaim {cite:p}`A`\n", ["A"]),
+        ("`literal\n---\nClaim {cite:p}`A`\n", ["A"]),
+        ("`literal\n***\n{cite:p}`A`\n", ["A"]),
+        ("Title `x\n=====\n{cite:p}`A`\n", ["A"]),
+        ("`one\n\n{cite:p}`A`\n", ["A"]),
+        # soft breaks inside ONE paragraph still pair code spans (and then hide what they enclose)
+        ("`code\nspan` {cite:p}`A`\n", ["A"]),
+        ("`open\n{cite:p}`A`\n", []),
+        ("see {cite:p}`A,\nB` end\n", ["A", "B"]),
+        ("> quoted {cite:p}`A,\n> B`\n", ["A", "B"]),
+        ("> quoted\nlazy {cite:p}`A`\n", ["A"]),
+        # fences are scoped to the container that opened them
+        ("> ```\n> sample\n\nClaim {cite:p}`A`\n\n```text\nnormal\n```\n", ["A"]),
+        ("```text\n> ```\n{cite:p}`A`\n> ```\n```\n", []),
+        ("```text\n- ```\n{cite:p}`A`\n```\n", []),
+        ("```text\n> quote {cite:p}`A`\n> > deeper\n```\n", []),
+        ("> > ```\n> > x\n> Claim {cite:p}`A`\n", ["A"]),
+        ("> ```\n> ```\n{cite:p}`A`\n", ["A"]),
+        ("> ```\n> {cite:p}`B`\n> ```\n{cite:p}`A`\n", ["A"]),
+        ("- ```\n  x\n- Claim {cite:p}`A`\n", ["A"]),
+        ("- ```\n{cite:p}`A`\n", ["A"]),
+        ("- item\n\n  ```\n  {cite:p}`B`\n  ```\n\nafter {cite:p}`A`\n", ["A"]),
+        ("1. item\n\n   ~~~\n   {cite:p}`B`\n   ~~~\n\nafter {cite:p}`A`\n", ["A"]),
+        ("- a\n  > ```\n  > {cite:p}`B`\n  > ```\n  {cite:p}`A`\n", ["A"]),
+        ("> - ```\n>   {cite:p}`B`\n>   ```\n> {cite:p}`A`\n", ["A"]),
+        (">\t```\n>\tcode {cite:p}`B`\n>\t```\n{cite:p}`A`\n", ["A"]),
+        ("> ```\n>\tcode {cite:p}`B`\n> ```\n{cite:p}`A`\n", ["A"]),
+        ("> ````\n> ```\n> {cite:p}`B`\n> ```\n> ````\n{cite:p}`A`\n", ["A"]),
+        ("> ```\n> {cite:p}`B`\n\n> ```\n> {cite:p}`C`\n> ```\n{cite:p}`A`\n", ["A"]),
+        # a closer indented four columns past its container is code, not a closer
+        ("```\n    ```\n{cite:p}`A`\n```\n", []),
+        # list item first-line indentation: >= 5 columns after the marker is indented code
+        ("-     {cite:p}`A`\n", []),
+        ("-      {cite:p}`A`\n", []),
+        ("1.     {cite:p}`A`\n", []),
+        ("-\t\t{cite:p}`A`\n", []),
+        ("- a\n  -     {cite:p}`B`\n  - {cite:p}`A`\n", ["A"]),
+        ("- a\n\n      {cite:p}`B`\n", []),
+        ("> -     {cite:p}`B`\n> - {cite:p}`A`\n", ["A"]),
+        # one to four spaces are ordinary list prose
+        ("- {cite:p}`A`\n", ["A"]),
+        ("-  {cite:p}`A`\n", ["A"]),
+        ("-   {cite:p}`A`\n", ["A"]),
+        ("-    {cite:p}`A`\n", ["A"]),
+        ("1.    {cite:p}`A`\n", ["A"]),
+        ("-\t{cite:p}`A`\n", ["A"]),
+        ("- a\n\n     {cite:p}`A`\n", ["A"]),
+        ("- a\n    - {cite:p}`A`\n", ["A"]),
+        ("- a\n\n  - b\n\n        {cite:p}`B`\n\n    {cite:p}`A`\n", ["A"]),
+    ]
+
+    def test_block_local_inline_matching_and_container_scoped_fences(self):
+        for text, want in self.CASES:
+            with self.subTest(text=text):
+                self.assertEqual([k for _, _, k in found(text)], want)
+
+    def test_a_visible_cite_is_never_zero_or_an_explicit_failure(self):
+        for text in ("`literal\n# Claim {cite:p}`A`\n", "- `literal\n- Claim {cite:p}`A`\n"):
+            self.assertEqual(len(co.scan_markdown(text)), 1)
+
+    def test_roles_in_lists_quotes_headings_keep_exact_byte_spans_and_lines(self):
+        text = "é `x\n# Claim ü {cite:p}`A`\n"
+        occ = co.scan_markdown(text)[0]
+        raw = text.encode("utf-8")
+        self.assertEqual(raw[slice(*occ["byte_span"])], "{cite:p}`A`".encode("utf-8"))
+        self.assertEqual(occ["line_range"], [2, 2])
+        self.assertEqual(occ["context"], "# Claim ü {cite:p}`A`")
+
+    def test_comments_do_not_cross_container_boundaries_silently(self):
+        self.assertEqual(found("<!--\n> {cite:p}`B`\n- c\n-->\n{cite:p}`A`\n"), [("cite:p", 0, "A")])
+        self.assertEqual(failure("> <!-- open\n\n{cite:p}`A`\n"), "unterminated_comment")
+        self.assertEqual(failure("- <!-- open\nnot indented -->\n"), "unterminated_comment")
+
+    def test_directives_close_with_their_container_and_still_fail_closed(self):
+        self.assertEqual(found("> :::{note}\n> inner {cite:p}`B`\n> :::\n{cite:p}`A`\n"),
+                         [("cite:p", 0, "B"), ("cite:p", 0, "A")])
+        self.assertEqual(failure("> ```{include} x.md\n\n{cite:p}`A`\n"), "unsupported_include")
+        self.assertEqual(found("> :::{weird}\n> plain\n\n{cite:p}`A`\n"), [("cite:p", 0, "A")])
+        self.assertEqual(failure("> :::{weird}\n> {cite:p}`B`\n"), "unsupported_directive_citation")
+
+
+# ------------------------------------------------- fail-closed traversal
+def _unreadable(case, path):
+    """chmod 000 `path` (restored on cleanup); True if the OS then really refuses to list/read it."""
+    os.chmod(str(path), 0)
+    case.addCleanup(os.chmod, str(path), 0o755)
+    try:
+        if path.is_dir():
+            os.listdir(str(path))
+        else:
+            path.read_bytes()
+    except OSError:
+        return True
+    return False
+
+
+class TraversalFailsClosed(Tmp):
+    def tree(self):
+        self.text("content/a.md", "Readable {cite:p}`A`.\n")
+        self.text("content/a.bib", "@misc{A, title={A}}\n")
+        self.text("content/private/hidden.md", "Hidden {cite:p}`A`.\n")
+        self.text("content/private/deep/hidden.bib", "@misc{Z, title={Z}}\n")
+
+    def refused(self, fn):
+        with self.assertRaises(co.CitationError) as ctx:
+            fn()
+        self.assertEqual(codes(ctx.exception.diagnostics), ["unreadable_source"])
+        self.assertTrue(any("private" in d.get("file", "") for d in ctx.exception.diagnostics))
+        return ctx.exception
+
+    def assert_nothing_certified(self, cli=True):
+        self.refused(lambda: co.scan_sources(self.root))
+        self.refused(lambda: co.create_snapshot(self.root))
+        self.assertFalse((self.root / co.SNAPSHOT_DIR).exists())
+        with self.assertRaises(co.CitationError):  # no snapshot exists, so there is nothing to cover
+            co.write_coverage(self.root)
+        self.assertFalse((self.root / co.COVERAGE).exists())
+        for cmd in ("extract", "snapshot", "validate-occurrences") if cli else ():
+            out = subprocess.run([sys.executable, str(ROOT / "scripts/citation_occurrences.py"), cmd, "--root",
+                                  str(self.root)], capture_output=True, text=True)
+            self.assertEqual(out.returncode, 1, cmd)
+            self.assertEqual(codes(json.loads(out.stdout)["errors"]), ["unreadable_source"], cmd)
+        self.assertFalse((self.root / co.EXTRACTION).exists())
+
+    def test_unreadable_subtree_is_refused_for_sources_and_bibliographies_real_permissions(self):
+        self.tree()
+        if not _unreadable(self, self.root / "content/private"):
+            self.skipTest("this user can read a mode-000 directory (root or an ACL-less filesystem)")
+        self.assert_nothing_certified()
+
+    def test_unreadable_subtree_is_refused_even_when_permissions_cannot_be_dropped(self):
+        self.tree()
+        real = os.scandir
+        blocked = str(self.root / "content/private")
+
+        def scandir(path=".", *a, **k):
+            if os.fspath(path) == blocked:
+                raise PermissionError(13, "Permission denied", blocked)
+            return real(path, *a, **k)
+
+        with mock.patch.object(os, "scandir", scandir):
+            self.assert_nothing_certified(cli=False)
+            self.assertFalse(co.validate_occurrences(self.root)["ok"])
+
+    def test_an_earlier_valid_snapshot_does_not_make_a_later_subset_acceptable(self):
+        self.tree()
+        shutil.rmtree(str(self.root / "content/private"))
+        stage_extraction(self.root)
+        self.text("content/private/hidden.md", "Hidden {cite:p}`A`.\n")
+        real = os.scandir
+        blocked = str(self.root / "content/private")
+
+        def scandir(path=".", *a, **k):
+            if os.fspath(path) == blocked:
+                raise PermissionError(13, "Permission denied", blocked)
+            return real(path, *a, **k)
+
+        with mock.patch.object(os, "scandir", scandir):
+            with self.assertRaises(co.CitationError) as ctx:
+                co.check_stage(self.root, live=True)
+            self.assertEqual(codes(ctx.exception.diagnostics), ["unreadable_source"])
+            self.assertFalse(co.validate_occurrences(self.root)["ok"])
+
+    def test_historical_snapshot_walk_fails_closed(self):
+        self.tree()
+        shutil.rmtree(str(self.root / "content/private"))
+        stage_extraction(self.root)
+        sub = self.root / co.SNAPSHOT_DIR / "files/content"
+        real = os.scandir
+
+        def scandir(path=".", *a, **k):
+            if os.fspath(path) == str(sub):
+                raise PermissionError(13, "Permission denied", str(sub))
+            return real(path, *a, **k)
+
+        with mock.patch.object(os, "scandir", scandir):
+            with self.assertRaises(co.CitationError) as ctx:
+                co.verify_snapshot(self.root / co.SNAPSHOT_DIR)
+            self.assertEqual(codes(ctx.exception.diagnostics), ["unreadable_snapshot"])
+            rep = co.audit_historical(self.root)
+            self.assertFalse(rep["ok"])
+            self.assertEqual(codes(rep["errors"]), ["unreadable_snapshot"])
+
+    def test_historical_snapshot_walk_fails_closed_real_permissions(self):
+        self.tree()
+        shutil.rmtree(str(self.root / "content/private"))
+        stage_extraction(self.root)
+        sub = self.root / co.SNAPSHOT_DIR / "files/content"
+        if not _unreadable(self, sub):
+            self.skipTest("this user can read a mode-000 directory")
+        rep = co.audit_historical(self.root)
+        self.assertFalse(rep["ok"])
+        self.assertTrue({"unreadable_snapshot", "snapshot_file_missing"} & set(codes(rep["errors"])))
+
+
+# ------------------------------------------- malformed verdict identifiers
+class VerdictIdentifierShapes(Tmp):
+    BAD = [[], {}, True, False, None, 5, 1.5, "", "abc", "A" * 64, ["a" * 64], {"a": 1}, [[]]]
+
+    def setUp(self):
+        super().setUp()
+        make_manuscript(self.root)
+        stage_extraction(self.root)
+        self.env = stage_verification(self.root)
+        self.scan = co.scan_sources(self.root)
+
+    def test_any_non_identifier_value_is_a_structured_diagnostic_never_a_crash(self):
+        for bad in self.BAD:
+            with self.subTest(occurrence_id=bad):
+                env = copy.deepcopy(self.env)
+                env["verdicts"][0]["occurrence_id"] = bad
+                d = co.check_verdicts(self.root, env, self.scan)
+                self.assertIn("malformed_verdict", codes(d))
+                self.assertIn("missing_verdict", codes(d))
+                json.dumps(d)
+
+    def test_cli_prints_json_and_exits_one_for_each_bad_identifier(self):
+        for bad in ([], {}, True, None, 5, "abc"):
+            with self.subTest(occurrence_id=bad):
+                env = copy.deepcopy(self.env)
+                env["verdicts"][0]["occurrence_id"] = bad
+                write_json(self.root, co.VERIFICATION, env)
+                out = subprocess.run([sys.executable, str(ROOT / "scripts/citation_occurrences.py"),
+                                      "validate-verdicts", "--root", str(self.root)], capture_output=True, text=True)
+                self.assertEqual(out.returncode, 1, out.stderr)
+                self.assertEqual(out.stderr, "")
+                rep = json.loads(out.stdout)
+                self.assertFalse(rep["ok"])
+                self.assertIn("malformed_verdict", codes(rep["errors"]))
+
+    def test_other_non_dict_verdict_entries_are_malformed_not_crashes(self):
+        for bad in ([], "x", None, 3):
+            env = copy.deepcopy(self.env)
+            env["verdicts"].append(bad)
+            self.assertIn("malformed_verdict", codes(co.check_verdicts(self.root, env, self.scan)))
+
+    def test_unexpected_internal_errors_still_yield_json_and_exit_one(self):
+        with mock.patch.object(co, "validate_verdicts", side_effect=RuntimeError("boom")):
+            with mock.patch("sys.stdout") as out:
+                rc = co.main(["validate-verdicts", "--root", str(self.root)])
+        self.assertEqual(rc, 1)
+        self.assertIn("internal_error", "".join(c.args[0] for c in out.write.call_args_list))
+
+
+# ------------------------------------------------ schema / runtime parity
+class OptionalFieldParity(Tmp):
+    def setUp(self):
+        super().setUp()
+        self.occ = json.loads((ROOT / "provenance/citation_occurrences.schema.json").read_text())
+        self.ver = json.loads((ROOT / "provenance/citation_verdicts.schema.json").read_text())
+        make_manuscript(self.root)
+        stage_extraction(self.root)
+        self.inv = read_json(self.root, co.EXTRACTION)
+        self.env = stage_verification(self.root)
+        self.scan = co.scan_sources(self.root)
+
+    def inventory_verdicts(self, f, first_only=False):
+        inv = copy.deepcopy(self.inv)
+        for r in inv["occurrences"][:1] if first_only else inv["occurrences"]:
+            f(r)
+        runtime = co.check_inventory(inv, self.scan)
+        schema = schema_errors(inv, self.occ, self.occ)
+        return runtime, schema
+
+    def test_optional_context_and_bib_entry_may_be_omitted_in_both(self):
+        for drop in (("context",), ("bib_entry",), ("context", "bib_entry"), ("claimed_finding",)):
+            with self.subTest(drop=drop):
+                runtime, schema = self.inventory_verdicts(lambda r: [r.pop(k, None) for k in drop])
+                self.assertEqual((runtime, schema), ([], []))
+
+    def test_required_core_fields_still_compare_exactly(self):
+        for field, value in (("line_range", [1, 1]), ("citation_key", "Nope"), ("directive_kind", "cite:t"),
+                             ("byte_span", [0, 1])):
+            with self.subTest(field=field):
+                runtime, _ = self.inventory_verdicts(lambda r: r.update({field: value}), first_only=True)
+                self.assertNotEqual(runtime, [])
+
+    def test_optional_fields_that_are_present_must_equal_the_authentic_content(self):
+        runtime, schema = self.inventory_verdicts(lambda r: r.update(context=r["context"] + " forged"))
+        self.assertIn("occurrence_mismatch", codes(runtime))
+        self.assertEqual(schema, [])  # shape is valid; only the rescan can know it is false
+
+        def forge(r):
+            r["bib_entry"] = dict(r["bib_entry"], text="@misc{Z, title={forged}}")
+
+        runtime, schema = self.inventory_verdicts(forge)
+        self.assertIn("occurrence_mismatch", codes(runtime))
+
+    def test_optional_field_types_are_enforced_by_runtime_and_schema_alike(self):
+        for field, value in (("context", 5), ("context", []), ("claimed_finding", 5), ("bib_entry", []),
+                             ("bib_entry", {"file": "x"}), ("bib_entry", {"file": "x", "byte_span": [1], "text": "t"}),
+                             ("bib_entry", {"file": "x", "byte_span": [-1, 2], "text": "t"})):
+            with self.subTest(field=field, value=value):
+                runtime, schema = self.inventory_verdicts(lambda r: r.update({field: value}))
+                self.assertNotEqual(runtime, [])
+                self.assertNotEqual(schema, [])
+
+    def evidence_env(self, depth, f):
+        env = copy.deepcopy(self.env)
+        v = next(x for x in env["verdicts"] if x["verification_depth"] == depth)
+        f(v["evidence"])
+        return env
+
+    def test_fulltext_unavailable_reason_type_is_enforced_at_every_depth(self):
+        for depth in ("fulltext", "abstract_only"):
+            for bad in ([], {}, 5, None, True, ""):
+                with self.subTest(depth=depth, reason=bad):
+                    env = self.evidence_env(depth, lambda ev: ev.update(fulltext_unavailable_reason=bad))
+                    self.assertNotEqual(co.check_verdicts(self.root, env, self.scan), [])
+                    self.assertNotEqual(schema_errors(env, self.ver, self.ver), [])
+            with self.subTest(depth=depth, reason="ok"):
+                env = self.evidence_env(depth, lambda ev: ev.update(fulltext_unavailable_reason="paywalled; no OA copy"))
+                self.assertEqual(co.check_verdicts(self.root, env, self.scan), [])
+                self.assertEqual(schema_errors(env, self.ver, self.ver), [])
+
+    def test_fulltext_without_a_reason_and_abstract_with_one_both_remain_valid(self):
+        self.assertEqual(co.check_verdicts(self.root, self.env, self.scan), [])
+        self.assertEqual(schema_errors(self.env, self.ver, self.ver), [])
+        env = self.evidence_env("abstract_only", lambda ev: ev.pop("fulltext_unavailable_reason"))
+        self.assertEqual(codes(co.check_verdicts(self.root, env, self.scan)), ["fulltext_fallback_unexplained"])
+        self.assertNotEqual(schema_errors(env, self.ver, self.ver), [])
 
 
 if __name__ == "__main__":

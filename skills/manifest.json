@@ -24,8 +24,8 @@
     {
       "name": "comprev-dataml-phases",
       "file": "skills/comprev-dataml-phases.md",
-      "bytes": 66454,
-      "sha256": "f94a19f9054d2704d9fc537d1c77b43b99f89f663d673a7b38f70cd37622acfb"
+      "bytes": 67820,
+      "sha256": "1cd10fb4a58f1593dfbd4886bfa39ec87635e99f89eecaa638b1ec89359b8a59"
     },
     {
       "name": "comprev-deploy-polish",
@@ -78,8 +78,8 @@
     {
       "name": "comprev-orchestrator",
       "file": "skills/comprev-orchestrator.md",
-      "bytes": 51129,
-      "sha256": "2a82a2038cb6ff80a0b3903709100d210e8f526067ef6328b32fa69742c2bc55"
+      "bytes": 53270,
+      "sha256": "7ef696a0d8eb37a8de17f6c7b4fa5b617a8ab8a0e3ee25da8614fcd455fdbab9"
     },
     {
       "name": "comprev-reviewer-agent",
@@ -114,14 +114,14 @@
     {
       "name": "comprev-triples-validator",
       "file": "skills/comprev-triples-validator.md",
-      "bytes": 1248,
-      "sha256": "4e53fd3b060b88d5b284783da700eeda168a120909f8172f8c435655657dfc2c"
+      "bytes": 2783,
+      "sha256": "aef0d8c127345ea8b8638ca27b1f77d0fad9d56ea855cfc8069421e7dd9c3cdc"
     },
     {
       "name": "comprev-verification",
       "file": "skills/comprev-verification.md",
-      "bytes": 13353,
-      "sha256": "474ff4c9739c8296e27900c09ce450b67553980789e521b780f6c5b209175ba4"
+      "bytes": 15426,
+      "sha256": "1598140f39569004e412cc4a708bb67e86b148ddb93ea076693d2415308b949c"
     },
     {
       "name": "comprev-writing-style",

@@ -1,0 +1,2 @@
+Cells respond robustly to stimuli across all tested conditions. We therefore conclude that stimulus-evoked responses are reliable.
+Unrelated trailing sentence.

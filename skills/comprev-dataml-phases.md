@@ -778,41 +778,46 @@ silent-render condition where a plugin loads but no markdown invokes it.
 
 ## Phase 15: Citation Triples
 
-**Agent:** DATAML
+**Agent:** DATAML (deterministic; no judgment, no sampling)
 
-**EXHAUSTIVE EXTRACTION (MANDATORY):** Extract one triple for EVERY `{cite:p}` and
-`{cite:t}` occurrence in the final document. If a citation directive contains
-multiple keys (e.g., `{cite:p}\`Smith2020,Jones2021\``), each key produces a
-separate triple paired with the same sentence. No heuristic selection, no
-sampling, no prioritization — every citation-claim pair must be extracted.
+Extraction is done by `scripts/citation_occurrences.py`, not by hand or by regex. It finds every
+`{cite:p}` / `{cite:t}` key occurrence in the canonical manuscript sources (`content/**/*.md`, the
+bibliographies `content/**/*.bib` and root `*.bib`, and the one local `{include}` that
+`content/Methods.md` uses), ignoring code fences, inline code, indented code, HTML comments, URL
+destinations, reference definitions and front matter. It refuses (instead of silently losing a
+citation) unsupported roles, `[@key]`/`@key` syntax, empty keys, unterminated roles/fences/comments,
+unknown directives that contain citation syntax, and a key with no `.bib` entry. v1 scope and the
+failure codes are in `docs/citation-occurrences.md`.
 
-For each occurrence, produce:
-
-```json
-{
-  "cite_key": "Smith2022",
-  "source_file": "sec-05-intrinsic-electrophysiology.md",
-  "source_line": 42,
-  "sentence": "the full sentence containing the {cite:p}/{cite:t} directive",
-  "claimed_finding": "what the review says this paper shows (1-2 sentence summary)",
-  "bib_entry": {
-    "title": "from the .bib file or references.bib",
-    "author": "from the .bib file",
-    "journal": "from the .bib file",
-    "year": "from the .bib file",
-    "volume": "from the .bib file",
-    "pages": "from the .bib file",
-    "doi": "from the .bib file"
-  }
-}
+```bash
+python scripts/citation_occurrences.py snapshot            # immutable copy of every source -> provenance/citation_snapshot/
+python scripts/citation_occurrences.py extract             # provenance/citation_triples.json (versioned inventory)
 ```
 
-Split into batches of 18 triples. The bib entry gives checkers everything needed
-to verify without guessing keywords.
+Run `snapshot` first, then `extract`, with no manuscript edit in between. Each occurrence record
+is exactly `schema_version`, `manuscript_revision`, `occurrence_id`, `relative_file`, `byte_span`
+(zero-based half-open UTF-8 bytes of the whole role), `line_range` (one-based, inclusive),
+`directive_kind` (`cite:p`/`cite:t`), `key_index` (zero-based position in the role) and
+`citation_key`, plus the verbatim `context` lines and the exact `bib_entry` text for the Phase 16
+agents. A role with several keys yields one record per key; repeated keys yield repeated records.
+`claimed_finding` may be added by an agent as advisory text; it is never treated as a mechanical
+fact. The schema is `provenance/citation_occurrences.schema.json`.
 
-**Completeness check:** After extraction, assert that the total triple count equals
-the total number of individual cite keys across all `{cite:p}`/`{cite:t}` directives
-in the document. If the counts diverge, re-extract — a citation was missed.
+Split the occurrences into batches of 18 for Phase 16. The `bib_entry` gives checkers everything
+needed to verify without guessing keywords.
+
+**Completeness is not self-reported.** Phase 15V and the ledger rescan the sources independently;
+the inventory is accepted only if it equals that rescan exactly (no missing, extra, duplicated or
+altered record, same revision). A manuscript edit after the snapshot (including a bibliography
+edit) makes the extraction stale: `reopen_phase('15', ...)`, then `snapshot --supersede` and
+`extract` again. Do not hand-edit the snapshot or the inventory.
+
+```python
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+advance_phase('15', extraction_vid, dataml_frame_ids)   # needs citation_snapshot/ + citation_triples.json
+```
 
 **Why exhaustive:** Heuristic extraction (e.g., selecting only topic sentences or
 paragraph conclusions) misses citations in parenthetical asides, subordinate clauses,
@@ -1028,8 +1033,8 @@ gate_files = {
     # renderer (`render_phase_outcomes_table`, supplied by the orchestrator) summarises
     # those directories. Phase 20's outcome is captured by the 20V repository-push gate.
     14: 'gate_assembly.json',          # Phase 14V (myst-validator)
-    15: 'citation_triples.json',       # Phase 15 (dataml-phases)
-    16: 'verification/',                # Phase 16 (verification): per-batch reports (dir)
+    15: 'citation_triples.json',       # Phase 15 (dataml-phases): + citation_snapshot/ (dir)
+    16: 'citation_verification.json',  # Phase 16 (verification): one verdict per occurrence
     17: 'fix_requests.json',           # Phase 17 (dataml-phases)
     18: 'fixes/',                       # Phase 18 (fix-execution): per-batch diffs (dir)
     19: 'updated_files/',               # Phase 19 (dataml-phases): applied diffs (dir)
@@ -1109,10 +1114,13 @@ for bulk uploads — it can push wrong file contents to multiple paths).
      `content/evidence-explorer-widget.mjs`, `content/figure-lightbox-widget.mjs`
    - `evidence/schema/`, `evidence/README.md`, `evidence/.gitkeep`
    - `provenance/review_compatibility_report.schema.json`,
-     `provenance/review_compatibility_report.template.json`
+     `provenance/review_compatibility_report.template.json`,
+     `provenance/citation_occurrences.schema.json`,
+     `provenance/citation_verdicts.schema.json`
    - `scripts/review-compatibility-report.mjs`, `scripts/build_skill_manifest.py`,
      `scripts/check_prose_fidelity.py`, `scripts/check_template_consistency.py`,
-     `scripts/frames_ledger.py`, `scripts/phase_ledger.py`, `scripts/skill_catalog.py`,
+     `scripts/citation_occurrences.py`, `scripts/frames_ledger.py`, `scripts/phase_ledger.py`,
+     `scripts/skill_catalog.py`,
      `scripts/test_evidence_explorer.mjs`, `scripts/test_fixtures/`,
      `scripts/shared_style.py`
 5. **Verify file signatures** after copy:

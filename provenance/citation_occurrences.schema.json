@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "comprev.citation_occurrences/1",
+  "title": "Citation occurrence inventory (provenance/citation_triples.json)",
+  "description": "Versioned envelope written by `scripts/citation_occurrences.py extract`. Structure is checked by the schema; exact equality with the manuscript is checked at runtime by an independent rescan, never by trusting this file. Mechanical occurrence coverage only: it says nothing about whether a cited paper supports a claim.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scanner_version", "manuscript_revision", "sources", "occurrence_count", "extraction_digest", "occurrences"],
+  "properties": {
+    "schema_version": {"const": "comprev.citation_occurrences/1"},
+    "scanner_version": {"const": "comprev.citation_scanner/3"},
+    "manuscript_revision": {"$ref": "#/$defs/sha256"},
+    "extraction_digest": {"$ref": "#/$defs/sha256"},
+    "occurrence_count": {"type": "integer", "minimum": 0},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "role", "bytes", "sha256"],
+        "properties": {
+          "path": {"$ref": "#/$defs/relative_path"},
+          "role": {"enum": ["markdown", "bibliography", "include"]},
+          "bytes": {"type": "integer", "minimum": 0},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "occurrences": {"type": "array", "items": {"$ref": "#/$defs/occurrence"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "relative_path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(^|/)\\.\\.?(/|$)).+$"},
+    "span": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}},
+    "occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "manuscript_revision", "occurrence_id", "relative_file", "byte_span", "line_range", "directive_kind", "key_index", "citation_key"],
+      "properties": {
+        "schema_version": {"const": "comprev.citation_occurrences/1"},
+        "manuscript_revision": {"$ref": "#/$defs/sha256"},
+        "occurrence_id": {"$ref": "#/$defs/sha256"},
+        "relative_file": {"$ref": "#/$defs/relative_path"},
+        "byte_span": {"$ref": "#/$defs/span", "description": "zero-based half-open UTF-8 byte offsets of the whole role"},
+        "line_range": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1}, "description": "one-based inclusive lines"},
+        "directive_kind": {"enum": ["cite:p", "cite:t"]},
+        "key_index": {"type": "integer", "minimum": 0},
+        "citation_key": {"type": "string", "minLength": 1},
+        "context": {"type": "string", "description": "verbatim source lines of line_range, joined with \\n"},
+        "bib_entry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file", "byte_span", "text"],
+          "properties": {"file": {"type": "string"}, "byte_span": {"$ref": "#/$defs/span"}, "text": {"type": "string"}}
+        },
+        "claimed_finding": {"type": "string", "description": "advisory text for scientific agents; never treated as a mechanical fact"}
+      }
+    }
+  }
+}

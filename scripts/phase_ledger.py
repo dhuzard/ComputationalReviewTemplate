@@ -23,6 +23,13 @@ as one JSON object, is bound by sha256 to the receipt, and says what its
 producer documents as success. It does not re-run any scientific check, and it
 cannot tell a truthful validator from a forged file; independent validators stay
 independent (child ids must differ from the actor's).
+
+Phases 15, 15V and 16 carry a *citation contract* (scripts/citation_occurrences.py): admission
+re-runs an independent rescan of the manuscript sources, so a submitted inventory, coverage file or
+report is never trusted. Until phase 16 is recorded complete the live manuscript must still equal
+the Phase 15 snapshot (restart/require/advance enforce it). Once 16 is recorded, those receipts are
+*historical*: they validate the pinned snapshot, extraction, coverage and verdicts, not the current
+manuscript, so later approved repairs (19) and the Methods refresh (20a) may change live files.
 """
 import argparse
 import hashlib
@@ -37,6 +44,8 @@ from collections import namedtuple
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+import citation_occurrences as _co
 
 try:  # POSIX advisory locks; elsewhere fall back to an exclusive lock file
     import fcntl
@@ -83,6 +92,15 @@ class PhaseBlocked(LedgerError):
 
 class GateError(LedgerError):
     pass
+
+
+class CitationGateError(GateError):
+    """A citation contract failed; `.diagnostics` holds the machine-readable codes."""
+
+    def __init__(self, diagnostics):
+        self.diagnostics = list(diagnostics)
+        codes = ", ".join(sorted({d["code"] for d in self.diagnostics}))
+        super().__init__("citation contract failed [%s]: %s" % (codes, self.diagnostics[0]["message"]))
 
 
 # ---------------------------------------------------------------- contracts
@@ -194,14 +212,17 @@ def _check_refresh(o):
              "`frame_count` must be a positive integer")
 
 
-Spec = namedtuple("Spec", "id gate verdict number check report_check outputs")
+Spec = namedtuple("Spec", "id gate verdict number check report_check outputs contract")
 # verdict: "file" = the gate file carries the validator verdict; "report" = the
 # validator's structured result is passed to advance_phase; None = no verdict.
 # number: the `phase` value a validator-authored object must carry.
+# contract: citation contract re-run at admission and on every re-verification ("extract",
+# "coverage", "verdicts"); see scripts/citation_occurrences.py.
 
 
-def _spec(pid, gate=None, verdict=None, number=None, check=None, report_check=None, outputs=()):
-    return Spec(pid, gate, verdict, number, check, report_check, tuple(outputs))
+def _spec(pid, gate=None, verdict=None, number=None, check=None, report_check=None, outputs=(),
+          contract=None):
+    return Spec(pid, gate, verdict, number, check, report_check, tuple(outputs), contract)
 
 
 PHASE_ORDER = ("1", "1V", "2", "2V", "3", "3V", "4", "5", "5V", "6", "7", "7V", "8", "9", "9V",
@@ -230,9 +251,9 @@ PHASES = {s.id: s for s in (
     _spec("13", "gate_methods.json", None, None, _check_methods),
     _spec("14"),
     _spec("14V", "gate_assembly.json", "file", 14, _check_final_vids),
-    _spec("15", outputs=("citation_triples.json",)),
-    _spec("15V", verdict="report", number=15),
-    _spec("16"),
+    _spec("15", outputs=("citation_snapshot", "citation_triples.json"), contract="extract"),
+    _spec("15V", verdict="report", number=15, outputs=("citation_coverage.json",), contract="coverage"),
+    _spec("16", outputs=("citation_verification.json",), contract="verdicts"),
     _spec("17", outputs=("fix_requests.json",)),
     _spec("17V", verdict="report", number=17),
     _spec("18"),
@@ -259,6 +280,9 @@ LEGACY_ALIASES = {
 # Whose child frames must differ: validators from their actor, critics from the writers.
 INDEPENDENT_OF = {s: s[:-1] for s in PHASE_ORDER if s.endswith("V")}
 INDEPENDENT_OF.update({"8": "7", "12": "11"})
+# Phase 16 verifies what 15 extracted and 15V checked, so it must share no frame with either.
+ALSO_INDEPENDENT_OF = {"16": ("15", "15V")}
+CITATION_PHASES = ("15", "15V", "16")
 
 
 def resolve_phase(phase, allow_legacy=False):
@@ -580,6 +604,12 @@ def _validate_state(st):
                 e["report_sha256"] is not None and not (
                 isinstance(e["report_sha256"], str) and _HEX64.fullmatch(e["report_sha256"]))):
             _bad(f"phase {pid}: report_sha256 does not match the phase contract")
+        if pid in CITATION_PHASES and isinstance(e["outputs"], dict) and {
+                Path(k).name for k in e["outputs"]} != set(spec.outputs):
+            _bad(f"phase {pid}: this receipt predates the citation contract (it must record "
+                 f"{', '.join(spec.outputs)}). The ledger was NOT reset. Move it aside, init_ledger(), and "
+                 "re-register the phases in order with the new Phase 15/15V/16 artifacts; see "
+                 "docs/phase-ledger.md (Migration) and docs/citation-occurrences.md")
         if not isinstance(e["outputs"], dict) or ".." in "".join(e["outputs"]) or {Path(k).name for k in e["outputs"]} != {
                 Path(o).name for o in spec.outputs} or not all(
                 isinstance(v, str) and _HEX64.fullmatch(v) for v in e["outputs"].values()):
@@ -753,6 +783,31 @@ def _evaluate_gate(spec, root, report, allow_deferred):
     return out
 
 
+def _admit_citations(spec, root, report):
+    """Run the phase's citation contract against freshly rescanned sources (live admission)."""
+    if not spec.contract:
+        return
+    try:
+        _co.verify_contract(spec.contract, root, live=True,
+                            report_obj=report if spec.contract == "coverage" else None)
+    except _co.CitationError as e:
+        raise CitationGateError(e.diagnostics)
+
+
+def _sealed(phases):
+    """True once phase 16 is RECORDED complete: only then do 15/15V/16 become historical."""
+    return phases["16"]["status"] == "complete"
+
+
+def citation_seal_state(root="."):
+    """Sealing state read from the ledger itself (never from an unrecorded file)."""
+    ledger = load_ledger(root)
+    sealed = _sealed(ledger.phases)
+    return {"sealed": sealed, "mode": "historical" if sealed else "live",
+            "ledger_revision": ledger.revision, "run_id": ledger.run_id,
+            "snapshot_output": ledger.phases["15"]["outputs"].get("provenance/citation_snapshot")}
+
+
 def advance_phase(phase, artifact_id, child_ids=None, *, report=None, allow_deferred=False,
                   root=".", expected_revision=None):
     """Record `phase` complete, after checking its prerequisite, receipt and gate.
@@ -783,17 +838,20 @@ def advance_phase(phase, artifact_id, child_ids=None, *, report=None, allow_defe
         if prev and st["phases"][prev]["status"] != "complete":
             raise PhaseBlocked(f"phase {pid} blocked: phase {prev} is not complete")
         # Every earlier receipt must still match the disk, not just the previous status.
+        sealed = _sealed(st["phases"])
         for p in PHASE_ORDER[:PHASE_ORDER.index(pid)]:
             if st["phases"][p]["status"] == "complete":
-                _verify_entry(root, p, st["phases"][p])
-        other = INDEPENDENT_OF.get(pid)
-        if other and set(ids) & set(st["phases"][other]["child_ids"]):
-            raise GateError(f"phase {pid} must run in different agent frames than phase {other}")
+                _verify_entry(root, p, st["phases"][p], sealed)
+        for other in ([INDEPENDENT_OF[pid]] if pid in INDEPENDENT_OF else []) + list(
+                ALSO_INDEPENDENT_OF.get(pid, ())):
+            if set(ids) & set(st["phases"][other]["child_ids"]):
+                raise GateError(f"phase {pid} must run in different agent frames than phase {other}")
         facts = _evaluate_gate(spec, root, report, allow_deferred)
         outputs = {}
         for rel in spec.outputs:
             shown, sha = _hash_output(root, rel)
             outputs[shown] = sha
+        _admit_citations(spec, root, report)
         e.update(status="complete", artifact_id=artifact_id, child_ids=ids, completed_at=_now(),
                  outputs=outputs, **facts)
         return "advance", pid, None
@@ -815,7 +873,7 @@ def reopen_phase(phase, reason, *, root=".", expected_revision=None):
     return _mutate(root, expected_revision, apply)
 
 
-def _verify_entry(root, pid, e):
+def _verify_entry(root, pid, e, sealed=False):
     spec = PHASES[pid]
     if spec.gate:
         rel, obj, sha = _read_gate(root, spec.gate)
@@ -829,13 +887,19 @@ def _verify_entry(root, pid, e):
     for rel, sha in e["outputs"].items():
         if _hash_path(Path(root, rel)) != sha:
             raise GateError(f"output {rel} changed after phase {pid} completed")
+    if spec.contract:  # live until 16 is recorded; afterwards the pinned snapshot, never the live files
+        try:
+            _co.verify_contract(spec.contract, root, live=not sealed)
+        except _co.CitationError as err:
+            raise CitationGateError(err.diagnostics)
 
 
 def restart(root="."):
     """Load the ledger and re-verify every completed phase against the files on disk."""
     ledger = load_ledger(root)
+    sealed = _sealed(ledger.phases)
     for pid in ledger.completed:
-        _verify_entry(root, pid, ledger.phases[pid])
+        _verify_entry(root, pid, ledger.phases[pid], sealed)
     return ledger
 
 
@@ -845,8 +909,9 @@ def require_phase(phase, root="."):
     ledger = load_ledger(root)
     if ledger.phases[pid]["status"] != "complete":
         raise PhaseBlocked(f"BLOCKED: phase {pid} is not complete (next is {ledger.next_phase})")
+    sealed = _sealed(ledger.phases)
     for p in PHASE_ORDER[:PHASE_ORDER.index(pid) + 1]:
-        _verify_entry(root, p, ledger.phases[p])
+        _verify_entry(root, p, ledger.phases[p], sealed)
     return ledger.phases[pid]["artifact_id"]
 
 
@@ -873,6 +938,8 @@ def main(argv=None):
             restart(a.root) if a.command == "verify" else load_ledger(a.root))
     except LedgerError as e:
         print(f"{type(e).__name__}: {e}", file=sys.stderr)
+        if isinstance(e, CitationGateError):  # machine-readable codes for coordinators and CI
+            print(json.dumps(_co.report("phase-ledger " + a.command, e.diagnostics), indent=2, sort_keys=True))
         return 1
     print(f"run {ledger.run_id} revision {ledger.revision}; completed: "
           f"{', '.join(ledger.completed) or 'none'}; next: {ledger.next_phase or 'done'}")

@@ -14,8 +14,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "test"))
 
 import phase_ledger as pl  # noqa: E402
+import citation_occurrences as co  # noqa: E402
+import test_citation_occurrences as tco  # noqa: E402  (real manuscript/evidence fixtures; module only)
 
 VALIDATOR = {"gate": "pass", "gate_passed": True, "structural_results": {"X": "pass"},
              "section_md_vids_final": {"01.md": "v1"}}
@@ -95,15 +98,52 @@ class Env(unittest.TestCase):
         d.mkdir(parents=True, exist_ok=True)
         (d / pl.PHASES[pid].gate).write_text(json.dumps(gate_body(pid) if body is None else body))
 
+    def manuscript(self):
+        if not (self.tmp / "content").exists():
+            tco.make_manuscript(self.tmp)
+
+    def edit(self, rel, old, new, required=True):
+        p = self.tmp / rel
+        text = p.read_text(encoding="utf-8")
+        if required:
+            self.assertIn(old, text)
+        p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    def produce_citation_outputs(self, pid, kw):
+        """What the DATAML/validator/LITREVIEW tooling writes for 15, 15V and 16 (real files, no mocks)."""
+        self.manuscript()
+        if pid == "15":
+            tco.stage_extraction(self.root)
+        elif pid == "15V":
+            kw.setdefault("report", dict(report_for(pid), **tco.stage_coverage(self.root)))
+        elif pid == "16":
+            tco.stage_verification(self.root)
+
+    def mutate_live_manuscript(self, pid):
+        """Phase 19 applies approved repairs; 20a refreshes Methods. Both legitimately edit live files."""
+        self.manuscript()
+        if pid == "19":
+            self.edit("content/01_introduction.md", "Cells respond to stimuli", "Cells reliably respond to stimuli",
+                      required=False)
+            self.edit("content/02_results.md", "{cite:p}`Root2018`", "{cite:p}`Smith2020`", required=False)
+        elif pid == "20a":
+            self.edit("content/Methods.md", "Methods cite", "Methods (refreshed with final counts) cite",
+                      required=False)
+
     def advance(self, pid, **kw):
         """Produce whatever `pid` needs on disk, then advance it with fresh agent ids."""
         spec = pl.PHASES[pid]
         if spec.gate and "body" not in kw and not (self.tmp / "provenance" / spec.gate).exists():
             self.write_gate(pid)
         kw.pop("body", None)
-        for out in spec.outputs:
-            (self.tmp / "provenance").mkdir(exist_ok=True)
-            (self.tmp / "provenance" / out).write_text('[{"t": 1}]')
+        if pid in ("15", "15V", "16"):
+            self.produce_citation_outputs(pid, kw)
+        else:
+            for out in spec.outputs:
+                (self.tmp / "provenance").mkdir(exist_ok=True)
+                (self.tmp / "provenance" / out).write_text('[{"t": 1}]')
+        if pid in ("19", "20a"):
+            self.mutate_live_manuscript(pid)
         if spec.verdict == "report":
             kw.setdefault("report", report_for(pid))
         self.n += 1
@@ -534,7 +574,8 @@ class GateContracts(Env):
                     {"gate": "pass", "phase": 15, "failures": ["x"]}, "pass", ["pass"]):
             with self.assertRaises(pl.GateError, msg=repr(rep)):
                 pl.advance_phase("15V", "vid", ["v"], report=rep, root=self.root)
-        pl.advance_phase("15V", "vid", ["v"], report={"gate": "pass", "phase": 15}, root=self.root)
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
+        pl.advance_phase("15V", "vid", ["v"], report=bound, root=self.root)
         self.assertEqual(len(pl.load_ledger(self.root).phases["15V"]["report_sha256"]), 64)
 
     def test_report_19v_must_carry_canonical_artifact_map(self):
@@ -558,17 +599,19 @@ class GateContracts(Env):
 
     def test_output_receipts_for_phases_without_gates(self):
         self.run_to("14V")
-        with self.assertRaisesRegex(pl.GateError, "citation_triples.json not found"):
+        self.manuscript()
+        with self.assertRaisesRegex(pl.GateError, "citation_snapshot not found"):
             pl.advance_phase("15", "vid", ["a"], root=self.root)
-        d = self.tmp / "provenance"
-        d.mkdir(exist_ok=True)
-        (d / "citation_triples.json").write_text("")
+        tco.stage_extraction(self.root)
+        (self.tmp / co.EXTRACTION).write_text("")
         with self.assertRaisesRegex(pl.GateError, "empty"):
             pl.advance_phase("15", "vid", ["a"], root=self.root)
-        (d / "citation_triples.json").write_text("[1]")
+        tco.stage_extraction(self.root)
         pl.advance_phase("15", "vid", ["a"], root=self.root)
         recorded = pl.load_ledger(self.root).phases["15"]["outputs"]
-        self.assertEqual(list(recorded), ["provenance/citation_triples.json"])
+        self.assertEqual(sorted(recorded), ["provenance/citation_snapshot", "provenance/citation_triples.json"])
+        self.run_to("17")
+        self.assertEqual(list(pl.load_ledger(self.root).phases["17"]["outputs"]), ["provenance/fix_requests.json"])
 
 
 class IntegrityAfterApproval(Env):
@@ -611,7 +654,8 @@ class IntegrityAfterApproval(Env):
         self.run_to("14V")
         self.advance("15")
         pl.restart(self.root)
-        (self.tmp / "provenance" / "citation_triples.json").write_text("[2]")
+        out = self.tmp / "provenance" / "citation_triples.json"
+        out.write_text(out.read_text() + " ")
         with self.assertRaisesRegex(pl.GateError, "changed after"):
             pl.restart(self.root)
 
@@ -650,11 +694,17 @@ class IntegrityAfterApproval(Env):
     def test_advance_rejects_missing_or_changed_prior_output(self):
         self.run_to("14V")
         self.advance("15")
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
         out = self.tmp / "provenance" / "citation_triples.json"
-        out.write_text("[2]")
-        self._assert_advance_rejected_unchanged("15V")
-        out.unlink()
-        self._assert_advance_rejected_unchanged("15V")
+        original = out.read_bytes()
+        for tamper in (lambda: out.write_bytes(original + b" "), out.unlink):
+            tamper()
+            before = self.state_path().read_bytes()
+            with self.assertRaises(pl.GateError):
+                pl.advance_phase("15V", "vid-15V", ["frame-v"], report=bound, root=self.root)
+            self.assertEqual(self.state_path().read_bytes(), before)
+            out.write_bytes(original)
+        pl.advance_phase("15V", "vid-15V", ["frame-v"], report=bound, root=self.root)
 
     def test_advance_succeeds_with_intact_prerequisites_and_after_restart(self):
         self.advance("7")
@@ -875,6 +925,542 @@ class WritesAndConcurrency(Env):
         text = self.state_path().read_text()
         self.assertTrue(text.endswith("\n"))
         self.assertEqual(json.loads(text), pl.load_ledger(self.root).state)
+
+
+class CitationContract(Env):
+    """Phases 15, 15V and 16 bind the ledger to independent rescans of the manuscript sources."""
+
+    def setUp(self):
+        super().setUp()
+        pl.init_ledger(self.root)
+        self.run_to("14V")
+
+    def codes(self, ctx):
+        return sorted({d["code"] for d in ctx.exception.diagnostics})
+
+    def unchanged(self, fn, *exc):
+        before, rev = self.state_path().read_bytes(), pl.load_ledger(self.root).revision
+        with self.assertRaises(exc or (pl.GateError,)) as ctx:
+            fn()
+        self.assertEqual(self.state_path().read_bytes(), before)
+        self.assertEqual(pl.load_ledger(self.root).revision, rev)
+        return ctx
+
+    def to_sealed(self, last="16"):
+        self.run_to(last)
+
+    # -- Phase 15
+    def test_phase15_needs_a_real_snapshot_and_a_matching_extraction(self):
+        self.manuscript()
+        self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root))
+        tco.stage_extraction(self.root)
+        for junk in ('[{"t": 1}]', "{}", '{"schema_version": "comprev.citation_occurrences/1"}'):
+            (self.tmp / co.EXTRACTION).write_text(junk)
+            ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+            self.assertTrue(ctx.exception.diagnostics, junk)
+        tco.stage_extraction(self.root)
+        inv = tco.read_json(self.root, co.EXTRACTION)
+        inv["occurrences"].pop()
+        inv["occurrence_count"] -= 1
+        tco.write_json(self.root, co.EXTRACTION, inv)
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["missing_occurrence"])
+
+    def test_phase15_rejects_a_manuscript_that_changed_after_the_snapshot(self):
+        self.manuscript()
+        tco.stage_extraction(self.root)
+        self.edit("content/01_introduction.md", "Cells respond", "Neurons respond")
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertIn("stale_snapshot", self.codes(ctx))
+        self.assertIn("source_modified", self.codes(ctx))
+        (self.tmp / "content/late.md").write_text("late\n")
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertIn("source_added", self.codes(ctx))
+
+    def test_snapshot_that_omits_a_source_is_rejected(self):
+        self.manuscript()
+        tco.stage_extraction(self.root)
+        snap = self.tmp / co.SNAPSHOT_DIR
+        m = tco.read_json(snap, "manifest.json")
+        m["sources"] = [x for x in m["sources"] if x["path"] != "content/references.bib"]
+        m["source_count"] = len(m["sources"])
+        (snap / "files/content/references.bib").chmod(0o644)
+        (snap / "files/content/references.bib").unlink()
+        (snap / "manifest.json").chmod(0o644)
+        tco.write_json(snap, "manifest.json", m)
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertTrue({"snapshot_rescan_mismatch", "unresolved_bib_key"} & set(self.codes(ctx)))
+
+    def test_failure_codes_are_machine_readable_on_the_exception_and_in_the_cli(self):
+        self.manuscript()
+        tco.stage_extraction(self.root)
+        self.advance("15")
+        self.edit("content/Methods.md", "Methods cite", "Methods differently cite")
+        with self.assertRaises(pl.CitationGateError) as ctx:
+            pl.restart(self.root)
+        self.assertIn("stale_snapshot", [d["code"] for d in ctx.exception.diagnostics])
+        out = subprocess.run([sys.executable, str(ROOT / "scripts/phase_ledger.py"), "verify", "--root", self.root],
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 1)
+        rep = json.loads(out.stdout)
+        self.assertEqual((rep["schema_version"], rep["ok"]), (co.DIAG_SCHEMA, False))
+        self.assertIn("stale_snapshot", [d["code"] for d in rep["errors"]])
+
+    # -- Phase 15V
+    def test_a_synthetic_validator_pass_cannot_bypass_the_coverage_check(self):
+        self.advance("15")
+        synthetic = {"gate": "pass", "phase": 15}
+        ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=synthetic, root=self.root))
+        self.assertIn("required output citation_coverage.json not found", str(ctx.exception))
+        bound = dict(synthetic, **tco.stage_coverage(self.root))
+        for field, value in (("citation_coverage_sha256", "0" * 64), ("manuscript_revision", "1" * 64),
+                             ("occurrence_count", 2)):
+            ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=dict(bound, **{field: value}),
+                                                          root=self.root), pl.CitationGateError)
+            self.assertEqual(self.codes(ctx), ["report_not_bound"])
+        ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=synthetic, root=self.root),
+                             pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["report_not_bound"])
+        led = pl.advance_phase("15V", "v", ["x"], report=bound, root=self.root)
+        self.assertEqual(sorted(led.phases["15V"]["outputs"]), ["provenance/citation_coverage.json"])
+
+    def test_forged_or_stale_coverage_is_rejected(self):
+        self.advance("15")
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
+        doc = tco.read_json(self.root, co.COVERAGE)
+        doc["occurrence_count"] = 99
+        tco.write_json(self.root, co.COVERAGE, doc)
+        ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=bound, root=self.root),
+                             pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["coverage_mismatch"])
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
+        self.edit("content/Methods.md", "Methods cite", "Methods edited cite")
+        ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=bound, root=self.root),
+                             pl.CitationGateError)
+        self.assertIn("stale_snapshot", self.codes(ctx))
+
+    # -- Phase 16
+    def test_phase16_requires_exact_verdicts_with_real_evidence(self):
+        self.run_to("15V")
+        self.manuscript()
+        env = tco.stage_verification(self.root)
+        good = json.loads(json.dumps(env))
+
+        def attempt():
+            return self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root),
+                                  pl.CitationGateError)
+
+        (self.tmp / co.VERIFICATION).unlink()
+        self.assertIn("required output citation_verification.json not found",
+                      str(self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root)).exception))
+        broken = json.loads(json.dumps(good))
+        broken["verdicts"].pop()
+        tco.write_json(self.root, co.VERIFICATION, broken)
+        self.assertEqual(self.codes(attempt()), ["missing_verdict"])
+        broken = json.loads(json.dumps(good))
+        broken["verdicts"][0]["evidence"] = {"status": "unavailable", "citation_key": broken["verdicts"][0]["cite_key"],
+                                             "reason": "paywalled"}
+        tco.write_json(self.root, co.VERIFICATION, broken)
+        self.assertEqual(self.codes(attempt()), ["evidence_not_available"])
+        tco.write_json(self.root, co.VERIFICATION, good)
+        ev = self.tmp / good["verdicts"][0]["evidence"]["path"]
+        ev.write_bytes(ev.read_bytes() + b"!")
+        self.assertEqual(self.codes(attempt()), ["evidence_hash_mismatch"])
+        ev.write_bytes(ev.read_bytes()[:-1])
+        led = pl.advance_phase("16", "v", ["lit-1"], root=self.root)
+        self.assertEqual(sorted(led.phases["16"]["outputs"]), ["provenance/citation_verification.json"])
+
+    def test_phase16_admission_requires_the_manuscript_to_still_equal_the_snapshot(self):
+        self.run_to("15V")
+        tco.stage_verification(self.root)
+        self.edit("content/01_introduction.md", "Cells respond", "Neurons respond")
+        ctx = self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root), pl.CitationGateError)
+        self.assertIn("stale_snapshot", self.codes(ctx))
+
+    def test_phase16_frames_are_independent_of_15_and_15V(self):
+        self.run_to("15V")
+        tco.stage_verification(self.root)
+        led = pl.load_ledger(self.root)
+        for other in ("15", "15V"):
+            reused = led.phases[other]["child_ids"][0]
+            self.unchanged(lambda: pl.advance_phase("16", "v", [reused, "lit-9"], root=self.root))
+        pl.advance_phase("16", "v", ["lit-9"], root=self.root)
+
+    # -- live freshness before 16 is recorded
+    def test_before_16_restart_require_and_advance_enforce_live_freshness(self):
+        self.run_to("15V")
+        pl.restart(self.root)
+        original = (self.tmp / "content/Methods.md").read_text(encoding="utf-8")
+        self.edit("content/Methods.md", "Methods cite", "Methods quietly changed cite")
+        for fn in (lambda: pl.restart(self.root), lambda: pl.require_phase("15", self.root),
+                   lambda: pl.require_phase("15V", self.root), lambda: self.advance("16")):
+            with self.assertRaises(pl.CitationGateError) as ctx:
+                fn()
+            self.assertIn("stale_snapshot", self.codes(ctx))
+        (self.tmp / "content/Methods.md").write_text(original, encoding="utf-8")
+        pl.restart(self.root)  # restored bytes are accepted again
+        self.assertFalse(pl.citation_seal_state(self.root)["sealed"])
+        self.assertEqual(pl.citation_seal_state(self.root)["mode"], "live")
+
+    def test_added_deleted_or_modified_sources_and_bibliography_block_live_phases(self):
+        self.run_to("15")
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
+        cases = {
+            "new markdown": lambda: (self.tmp / "content/new.md").write_text("new\n"),
+            "new bibliography": lambda: (self.tmp / "extra2.bib").write_text("@misc{N, x={1}}\n"),
+            "deleted markdown": lambda: (self.tmp / "content/02_results.md").unlink(),
+            "modified bibliography": lambda: self.edit("extra.bib", "root-level", "Root-level"),
+        }
+        saved = {p: p.read_bytes() for p in (self.tmp / "content").iterdir()}
+        saved[self.tmp / "extra.bib"] = (self.tmp / "extra.bib").read_bytes()
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                mutate()
+                with self.assertRaises(pl.GateError):
+                    pl.restart(self.root)
+                with self.assertRaises(pl.GateError):
+                    pl.advance_phase("15V", "vid-15V", ["frame-v"], report=bound, root=self.root)
+                for extra in (self.tmp / "content/new.md", self.tmp / "extra2.bib"):
+                    extra.unlink() if extra.exists() else None
+                for path, data in saved.items():
+                    path.write_bytes(data)
+                pl.restart(self.root)
+
+    def test_snapshot_extraction_and_coverage_tamper_is_detected_on_restart(self):
+        self.run_to("15V")
+        snap = self.tmp / co.SNAPSHOT_DIR
+        cases = {
+            "snapshot file": snap / "files/content/Methods.md",
+            "snapshot manifest": snap / "manifest.json",
+            "extraction": self.tmp / co.EXTRACTION,
+            "coverage": self.tmp / co.COVERAGE,
+        }
+        for name, path in cases.items():
+            with self.subTest(name):
+                original = path.read_bytes()
+                path.chmod(0o644)
+                path.write_bytes(original + b" ")
+                with self.assertRaisesRegex(pl.GateError, "changed after"):
+                    pl.restart(self.root)
+                path.write_bytes(original)
+                pl.restart(self.root)
+        extra = snap / "files/content/planted.md"
+        extra.write_text("planted\n")
+        with self.assertRaisesRegex(pl.GateError, "changed after"):
+            pl.restart(self.root)
+
+    def test_hash_pinned_tamper_cannot_be_hidden_by_rewriting_the_ledger_hash(self):
+        # even if the recorded output digest were rewritten, the contract re-derives everything
+        self.run_to("15V")
+        inv = tco.read_json(self.root, co.EXTRACTION)
+        inv["occurrences"].pop()
+        inv["occurrence_count"] -= 1
+        tco.write_json(self.root, co.EXTRACTION, inv)
+        st = json.loads(self.state_path().read_text())
+        st["phases"]["15"]["outputs"]["provenance/citation_triples.json"] = pl._hash_path(self.tmp / co.EXTRACTION)
+        self.state_path().write_text(json.dumps(st))
+        with self.assertRaises(pl.CitationGateError) as ctx:
+            pl.restart(self.root)
+        self.assertIn("missing_occurrence", self.codes(ctx))
+
+    # -- unsupported container layout (previously a silent zero-extraction)
+    BLOCKER = "x\n\n> - ```\n    > {cite:p}`Smith2020`\n> ```\n> ```\n"
+
+    def legacy_scan(self):
+        """Stage artifacts the way the superseded scanner accepted them: zero occurrences for the blocker file.
+        Used only to construct on-disk artifacts; every validation below runs unpatched."""
+        orig = co._Doc.scan
+
+        def scan(doc, skip_frontmatter=True):
+            return [] if doc.rel == "content/zz_blocker.md" else orig(doc, skip_frontmatter)
+        return mock.patch.object(co._Doc, "scan", scan)
+
+    def test_blocker_layout_is_rejected_at_15_with_the_ledger_unchanged(self):
+        self.manuscript()
+        (self.tmp / "content/zz_blocker.md").write_text(self.BLOCKER)
+        with self.legacy_scan():
+            tco.stage_extraction(self.root)
+        self.assertEqual(len(tco.read_json(self.root, co.EXTRACTION)["occurrences"]), 11)
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertIn("unsupported_container_layout", self.codes(ctx))
+
+    def test_previously_accepted_zero_extraction_artifacts_cannot_reach_15V_16_or_the_seal(self):
+        self.manuscript()
+        (self.tmp / "content/zz_blocker.md").write_text(self.BLOCKER)
+        with self.legacy_scan():
+            self.run_to("16")  # the superseded behaviour: 15, 15V and 16 accepted and sealed
+            self.assertTrue(pl.citation_seal_state(self.root)["sealed"])
+        # a ledger written under the previous scanner is reopened, not silently upgraded or trusted
+        before = self.state_path().read_bytes()
+        rev = pl.load_ledger(self.root).revision
+        for fn in (lambda: pl.restart(self.root), lambda: pl.require_phase("16", self.root)):
+            with self.assertRaises(pl.GateError) as ctx:
+                fn()
+            self.assertIn("unsupported_container_layout", [d["code"] for d in ctx.exception.diagnostics])
+        self.assertEqual(self.state_path().read_bytes(), before)
+        self.assertEqual(pl.load_ledger(self.root).revision, rev)
+
+    # -- sealing
+    def test_a_failed_16_does_not_seal_the_revision(self):
+        self.run_to("15V")
+        tco.stage_verification(self.root)
+        self.edit("content/Methods.md", "Methods cite", "Methods drifted cite")
+        self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root), pl.CitationGateError)
+        self.assertFalse(pl.citation_seal_state(self.root)["sealed"])
+        with self.assertRaises(pl.CitationGateError):
+            pl.restart(self.root)  # still live: nothing was recorded
+        self.assertEqual(pl.load_ledger(self.root).next_phase, "16")
+
+    def test_only_a_recorded_16_seals_and_then_live_edits_are_allowed(self):
+        self.run_to("16")
+        state = pl.citation_seal_state(self.root)
+        self.assertEqual((state["sealed"], state["mode"]), (True, "historical"))
+        self.assertEqual(len(state["snapshot_output"]), 64)
+        original = (self.tmp / "content/01_introduction.md").read_bytes()
+        self.edit("content/01_introduction.md", "Cells respond", "Neurons respond")
+        pl.restart(self.root)
+        self.assertEqual(pl.require_phase("16", self.root), "vid-16")
+        self.assertEqual(pl.require_phase("15", self.root), "vid-15")
+        self.advance("17")
+        (self.tmp / "content/01_introduction.md").write_bytes(original)
+        pl.restart(self.root)
+
+    def test_a_planted_seal_file_does_not_seal_anything(self):
+        self.run_to("15V")
+        (self.tmp / "provenance/citation_sealed.json").write_text('{"sealed": true}')
+        self.edit("content/Methods.md", "Methods cite", "Methods drifted cite")
+        with self.assertRaises(pl.CitationGateError):
+            pl.restart(self.root)
+
+    def test_sealed_receipts_still_catch_snapshot_extraction_verdict_and_evidence_tamper(self):
+        self.run_to("16")
+        self.edit("content/01_introduction.md", "Cells respond", "Neurons respond")  # legitimate repair
+        pl.restart(self.root)
+        cases = {
+            "snapshot": self.tmp / co.SNAPSHOT_DIR / "files/content/references.bib",
+            "extraction": self.tmp / co.EXTRACTION,
+            "coverage": self.tmp / co.COVERAGE,
+            "verification": self.tmp / co.VERIFICATION,
+        }
+        for name, path in cases.items():
+            with self.subTest(name):
+                original = path.read_bytes()
+                path.chmod(0o644)
+                path.write_bytes(original + b" ")
+                with self.assertRaisesRegex(pl.GateError, "changed after"):
+                    pl.restart(self.root)
+                with self.assertRaises(pl.GateError):
+                    pl.require_phase("16", self.root)
+                path.write_bytes(original)
+        ev = self.tmp / co.EVIDENCE_DIR / "Smith2020.fulltext.txt"
+        original = ev.read_bytes()
+        ev.write_bytes(b"X" + original[1:])
+        with self.assertRaises(pl.CitationGateError) as ctx:
+            pl.restart(self.root)
+        self.assertEqual(self.codes(ctx), ["evidence_hash_mismatch"])
+        ev.write_bytes(original)
+        pl.restart(self.root)
+
+    def test_pinned_extraction_edit_with_rehashed_ledger_is_still_rejected_when_sealed(self):
+        self.run_to("16")
+        inv = tco.read_json(self.root, co.EXTRACTION)
+        inv["occurrences"][0]["citation_key"] = "Lee2019"
+        tco.write_json(self.root, co.EXTRACTION, inv)
+        st = json.loads(self.state_path().read_text())
+        st["phases"]["15"]["outputs"]["provenance/citation_triples.json"] = pl._hash_path(self.tmp / co.EXTRACTION)
+        self.state_path().write_text(json.dumps(st))
+        with self.assertRaises(pl.CitationGateError):
+            pl.restart(self.root)
+
+    # -- reopen / re-seal
+    def test_reopen_unseals_and_live_freshness_applies_again(self):
+        self.run_to("17")
+        self.edit("content/01_introduction.md", "Cells respond", "Neurons respond")
+        pl.restart(self.root)  # sealed: fine
+        led = pl.reopen_phase("16", "verdict redo", root=self.root)
+        self.assertEqual(led.completed[-1], "15V")
+        self.assertFalse(pl.citation_seal_state(self.root)["sealed"])
+        with self.assertRaises(pl.CitationGateError):
+            pl.restart(self.root)  # live again, and the live manuscript drifted from the Phase 15 snapshot
+
+    def test_reopening_15_clears_downstream_and_the_run_can_reseal_a_new_revision(self):
+        self.run_to("19")
+        self.assertIn("Cells reliably respond", (self.tmp / "content/01_introduction.md").read_text())
+        led = pl.reopen_phase("15", "re-extract after repairs", root=self.root)
+        self.assertEqual(led.completed[-1], "14V")
+        for pid in ("15", "15V", "16", "17", "17V", "18", "19", "19V"):
+            self.assertEqual(led.phases[pid]["status"], "pending", pid)
+        old = tco.read_json(self.root, co.EXTRACTION)["manuscript_revision"]
+        self.advance("15")  # re-snapshot supersedes the old directory
+        self.assertTrue((self.tmp / "provenance/citation_snapshot.superseded-1").is_dir())
+        self.assertNotEqual(tco.read_json(self.root, co.EXTRACTION)["manuscript_revision"], old)
+        self.run_to("16")
+        self.assertTrue(pl.citation_seal_state(self.root)["sealed"])
+        self.run_to("21")
+        self.assertEqual(pl.restart(self.root).completed, list(pl.PHASE_ORDER))
+
+    def test_without_a_recorded_16_stale_state_cannot_be_resealed_without_reopening_15(self):
+        self.run_to("15V")
+        self.edit("content/Methods.md", "Methods cite", "Methods drifted cite")
+        self.unchanged(lambda: self.advance("16"), pl.CitationGateError, co.CitationError)
+        pl.reopen_phase("15", "manuscript changed", root=self.root)
+        self.run_to("16")
+        pl.restart(self.root)
+
+    # -- realistic pipeline
+    def test_realistic_pipeline_phase19_repairs_and_20a_methods_refresh_through_21(self):
+        self.run_to("16")
+        before = tco.read_json(self.root, co.EXTRACTION)["manuscript_revision"]
+        self.run_to("19")  # advance("19") applies an approved repair to live markdown, including a cite key
+        self.assertNotEqual(co.scan_sources(self.root).revision, before)
+        pl.restart(self.root)
+        self.run_to("20a")  # refreshes Methods.md
+        self.run_to("21")
+        led = pl.restart(self.root)
+        self.assertEqual(led.completed, list(pl.PHASE_ORDER))
+        # the pinned (historical) revision is still the one that was verified ...
+        self.assertEqual(tco.read_json(self.root, co.EXTRACTION)["manuscript_revision"], before)
+        self.assertTrue(co.audit_historical(self.root)["ok"])
+        # ... and nothing claims it verifies the edited manuscript: the live public validators fail
+        self.assertFalse(co.validate_occurrences(self.root)["ok"])
+        self.assertFalse(co.validate_verdicts(self.root)["ok"])
+        # a restart in another process (as a new session would) agrees
+        code = ("import sys; sys.path.insert(0, %r); import phase_ledger as p; print(len(p.restart(%r).completed))"
+                % (str(ROOT / "scripts"), self.root))
+        out = subprocess.run([sys.executable, "-O", "-c", code], capture_output=True, text=True)
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, str(len(pl.PHASE_ORDER))), out.stderr)
+
+    def test_optimized_interpreter_enforces_the_same_citation_contract(self):
+        self.run_to("15V")
+        self.edit("content/Methods.md", "Methods cite", "Methods drifted cite")
+        code = ("import sys; sys.path.insert(0, %r); import phase_ledger as p\n"
+                "try:\n    p.restart(%r)\nexcept p.CitationGateError as e:\n"
+                "    print(sorted({d['code'] for d in e.diagnostics}))\n    sys.exit(3)\n"
+                % (str(ROOT / "scripts"), self.root))
+        out = subprocess.run([sys.executable, "-O", "-c", code], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 3, out.stderr)
+        self.assertIn("stale_snapshot", out.stdout)
+
+    # -- old state and shape
+    def test_old_receipts_without_the_citation_contract_fail_closed_with_guidance(self):
+        self.run_to("16")
+        base = json.loads(self.state_path().read_text())
+        for pid, outputs in (("15", {"provenance/citation_triples.json": "0" * 64}), ("15V", {}), ("16", {})):
+            with self.subTest(pid):
+                st = json.loads(json.dumps(base))
+                st["phases"][pid]["outputs"] = outputs
+                self.state_path().write_text(json.dumps(st))
+                raw = self.state_path().read_bytes()
+                with self.assertRaisesRegex(pl.LedgerCorrupt, "predates the citation contract"):
+                    pl.load_ledger(self.root)
+                with self.assertRaises(pl.LedgerCorrupt):
+                    pl.restart(self.root)
+                self.assertEqual(self.state_path().read_bytes(), raw)  # never reset silently
+        self.state_path().write_text(json.dumps(base))
+
+    def test_specs_declare_the_contracts(self):
+        self.assertEqual({p: pl.PHASES[p].contract for p in pl.CITATION_PHASES},
+                         {"15": "extract", "15V": "coverage", "16": "verdicts"})
+        self.assertEqual(pl.PHASES["15"].outputs, ("citation_snapshot", "citation_triples.json"))
+        self.assertEqual(pl.PHASES["15V"].outputs, ("citation_coverage.json",))
+        self.assertEqual(pl.PHASES["16"].outputs, ("citation_verification.json",))
+
+    def test_zero_citation_manuscript_completes_with_explicit_empty_inventory(self):
+        (self.tmp / "content").mkdir()
+        (self.tmp / "content/a.md").write_text("# Nothing is cited here\n")
+        self.advance("15")
+        self.assertEqual(tco.read_json(self.root, co.EXTRACTION)["occurrence_count"], 0)
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
+        pl.advance_phase("15V", "vid-15V", ["frame-v"], report=bound, root=self.root)
+        tco.write_json(self.root, co.VERIFICATION, co.assemble_verification(self.root, []))
+        pl.advance_phase("16", "vid-16", ["frame-l"], root=self.root)
+        self.assertEqual(pl.restart(self.root).next_phase, "17")
+
+    # -- an inventory that omits a visible citation can never be admitted (block/container scanner repairs)
+    def hidden_cite_manuscript(self):
+        (self.tmp / "content").mkdir(exist_ok=True)
+        (self.tmp / "content/refs.bib").write_text("@misc{A, title={A}}\n")
+        (self.tmp / "content/claim.md").write_text("`literal\n# Claim {cite:p}`A`\n")
+
+    def empty_artifacts(self, scan):
+        """What a scanner that missed the visible citation would have written (zero occurrences)."""
+        inv = scan.inventory()
+        inv.update(occurrences=[], occurrence_count=0, extraction_digest=co.sha256_hex(co.canonical_bytes([])))
+        return inv
+
+    def test_visible_citation_after_a_stray_backtick_is_extracted_and_an_empty_inventory_is_refused(self):
+        self.hidden_cite_manuscript()
+        co.create_snapshot(self.root, supersede=True)
+        scan = co.scan_sources(self.root)
+        self.assertEqual([o["citation_key"] for o in scan.occurrences], ["A"])
+        tco.write_json(self.root, co.EXTRACTION, self.empty_artifacts(scan))
+        ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["missing_occurrence"])
+
+    def test_relative_list_indentation_in_quotes_cannot_hide_a_citation_from_the_ledger(self):
+        # a list item inside a quote continues by indentation relative to the quote content, not by physical column
+        for text, expect in (("> - ```\n  > {cite:p}`A`\n> ```\n> ```\n", ["A"]),   # paragraph, outside the fence
+                             ("  > - ```\n>   {cite:p}`A`\n> ```\n> ```\n", [])):  # inside the fence: code
+            with self.subTest(text=text):
+                self.hidden_cite_manuscript()
+                (self.tmp / "content/claim.md").write_text(text)
+                co.create_snapshot(self.root, supersede=True)
+                scan = co.scan_sources(self.root)
+                self.assertEqual([o["citation_key"] for o in scan.occurrences], expect)
+                if expect:
+                    tco.write_json(self.root, co.EXTRACTION, self.empty_artifacts(scan))
+                    ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root),
+                                         pl.CitationGateError)
+                    self.assertEqual(self.codes(ctx), ["missing_occurrence"])
+
+    def test_empty_coverage_and_empty_verdicts_cannot_follow_an_omitted_visible_citation(self):
+        self.hidden_cite_manuscript()
+        self.advance("15")
+        scan = co.scan_sources(self.root)
+        self.assertEqual(len(scan.occurrences), 1)
+        # 15V: a coverage file computed from the empty inventory, honestly bound to a validator report
+        doc = co._coverage_doc(scan, b"{}", b"{}")
+        doc.update(occurrence_count=0, key_count=0, extraction_digest=co.sha256_hex(co.canonical_bytes([])))
+        data = co.json_text(doc).encode("utf-8")
+        co.write_atomic(self.tmp / co.COVERAGE, data)
+        bound = dict(report_for("15V"), citation_coverage_sha256=co.sha256_hex(data),
+                     manuscript_revision=scan.revision, occurrence_count=0)
+        ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=bound, root=self.root),
+                             pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["coverage_mismatch"])
+        self.advance("15V")
+        # 16: an empty, self-consistent verdict list for the empty inventory
+        env = co.assemble_verification(scan, [])
+        env["extraction_digest"] = co.sha256_hex(co.canonical_bytes([]))
+        tco.write_json(self.root, co.VERIFICATION, env)
+        ctx = self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root), pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["extraction_digest_mismatch", "missing_verdict"])
+        tco.write_json(self.root, co.VERIFICATION, co.assemble_verification(scan, []))
+        ctx = self.unchanged(lambda: pl.advance_phase("16", "v", ["lit-1"], root=self.root), pl.CitationGateError)
+        self.assertEqual(self.codes(ctx), ["missing_verdict"])
+        self.assertEqual(pl.load_ledger(self.root).next_phase, "16")
+
+    def test_unreadable_subtree_blocks_every_citation_phase_and_leaves_state_untouched(self):
+        self.manuscript()
+        self.advance("15")
+        bound = dict(report_for("15V"), **tco.stage_coverage(self.root))
+        (self.tmp / "content/private").mkdir()
+        (self.tmp / "content/private/hidden.md").write_text("Hidden {cite:p}`Smith2020`.\n")
+        real, blocked = os.scandir, str(self.tmp / "content/private")
+
+        def scandir(path=".", *a, **k):
+            if os.fspath(path) == blocked:
+                raise PermissionError(13, "Permission denied", blocked)
+            return real(path, *a, **k)
+
+        with mock.patch.object(os, "scandir", scandir):
+            ctx = self.unchanged(lambda: pl.advance_phase("15V", "v", ["x"], report=bound, root=self.root),
+                                 pl.CitationGateError)
+            self.assertIn("unreadable_source", self.codes(ctx))
+            ctx = self.unchanged(lambda: pl.restart(self.root), pl.CitationGateError)
+            self.assertIn("unreadable_source", self.codes(ctx))
+            ctx = self.unchanged(lambda: pl.require_phase("15", self.root), pl.CitationGateError)
+            self.assertIn("unreadable_source", self.codes(ctx))
 
 
 class DocumentedSkillUsage(unittest.TestCase):

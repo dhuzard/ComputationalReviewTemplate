@@ -20,6 +20,22 @@ VALIDATOR = {"gate": "pass", "gate_passed": True, "structural_results": {"X": "p
              "section_md_vids_final": {"01.md": "v1"}}
 
 
+# Shape documented in skills/comprev-deploy-polish.md ("Fix-List Output").
+PHASE21_PASS = {
+    "gate": "phase_21_deploy_polish", "verdict": "PASS", "deploy_accessible": True,
+    "input_source": "pages_artifact_tarball",
+    "checks": {"BUILD_GREEN_AT_HEAD": {"verdict": "PASS", "tier": "A", "evidence": ["run 1: success"]},
+               "PER_PAGE_HTTP_200": {"verdict": "PASS", "tier": "B", "evidence": ["all 200"]}},
+    "fix_list": [],
+}
+PHASE21_BLOCKED = dict(
+    PHASE21_PASS, verdict="PASS_WITH_BLOCKED_TIER_B", deploy_accessible=False, input_source="none",
+    checks={"BUILD_GREEN_AT_HEAD": {"verdict": "PASS", "tier": "A", "evidence": []},
+            "PER_PAGE_HTTP_200": {"verdict": "BLOCKED", "tier": "B", "evidence": []},
+            "EXTERNAL_LINK_HEALTH": {"verdict": "BLOCKED", "tier": "B", "evidence": []}},
+    manual_checklist_artifact_id="manual_phase21_checklist.md")
+
+
 def gate_body(pid):
     """A minimal object that satisfies the documented contract of `pid`."""
     spec = pl.PHASES[pid]
@@ -40,7 +56,7 @@ def gate_body(pid):
         "12": {"total_must_fix": 0},
         "13": {"methods_artifact_id": "m", "subsection_count": 8, "reproducibility_statement_present": True},
         "20a": {"forbidden_hits": 0, "figure_regenerated": True, "frame_count": 12},
-        "21": {"verdict": "PASS"},
+        "21": PHASE21_PASS,
     }.get(pid, {})
     body.update(extra)
     return body
@@ -328,14 +344,46 @@ class GateContracts(Env):
         self.assertTrue(pl.load_ledger(self.root).phases["2V"]["deferred_accepted"])
         pl.require_phase("2V", root=self.root)  # re-verification honours the recorded acceptance
 
-    def test_phase21_verdicts(self):
-        for v in ("FAIL_REQUIRES_FIX", "BLOCKED_DEPLOY_INACCESSIBLE", "PASS_WITH_BLOCKED_TIER_B", "", None, True):
+    def test_phase21_documented_pass_forms(self):
+        for body in (PHASE21_PASS, PHASE21_BLOCKED):
             self.setUp()
-            self.expect_rejected("21", {"verdict": v})
-        self.setUp()
+            self.reach("21")
+            self.write_gate("21", body)
+            pl.advance_phase("21", "vid", ["v"], root=self.root)
+            pl.require_phase("21", root=self.root)
+
+    def test_phase21_rejects_failures_and_contradictions(self):
+        def mut(base, **kw):
+            return dict(copy.deepcopy(base), **kw)
+        bad_check = {"X": {"verdict": "FAIL", "tier": "A", "evidence": []}}
+        cases = [
+            {"verdict": "PASS"},  # legacy bare form: no gate name / checks
+            mut(PHASE21_PASS, gate="pass"),
+            mut(PHASE21_PASS, verdict="FAIL_REQUIRES_FIX", fix_list=[{"check": "X"}]),
+            mut(PHASE21_PASS, verdict="BLOCKED_DEPLOY_INACCESSIBLE"),
+            mut(PHASE21_PASS, verdict="FAIL_REQUIRES_USER_SIGNOFF"),
+            mut(PHASE21_PASS, verdict=True),
+            mut(PHASE21_PASS, checks=bad_check),
+            mut(PHASE21_PASS, checks={}),
+            mut(PHASE21_PASS, fix_list=[{"check": "X"}]),
+            mut(PHASE21_PASS, deploy_accessible=False),
+            mut(PHASE21_PASS, user_signoff_required=True),
+            mut(PHASE21_BLOCKED, deploy_accessible=True),
+            mut(PHASE21_BLOCKED, manual_checklist_artifact_id=None),
+            mut(PHASE21_BLOCKED, checks={"A1": {"verdict": "BLOCKED", "tier": "A"}}),
+            mut(PHASE21_BLOCKED, checks=dict(PHASE21_PASS["checks"])),  # nothing actually blocked
+            mut(PHASE21_BLOCKED, checks=dict(PHASE21_BLOCKED["checks"], **bad_check)),
+        ]
+        for i, body in enumerate(cases):
+            with self.subTest(i):
+                self.setUp()
+                self.expect_rejected("21", body)
+
+    def test_phase21_user_signoff_override_still_works(self):
+        body = {"gate": "phase_21_deploy_polish", "verdict": "FAIL_REQUIRES_USER_SIGNOFF",
+                "user_signoff": {"decision": "proceed", "note": "accepted residual fix-list"}}
         self.reach("21")
-        self.write_gate("21", {"verdict": "PASS_WITH_BLOCKED_TIER_B",
-                               "user_signoff": {"decision": "proceed", "note": "checked in browser"}})
+        self.write_gate("21", body)
         pl.advance_phase("21", "vid", ["v"], root=self.root)
 
     def test_contract_fields_per_gate(self):
@@ -553,6 +601,10 @@ class StateValidation(Env):
             "events reordered": lambda s: s["events"].reverse(),
             "event bad op": lambda s: s["events"][1].update(op="hack"),
             "event bad phase": lambda s: s["events"][1].update(phase="99"),
+            "event phase list": lambda s: s["events"][1].update(phase=[]),
+            "event phase dict": lambda s: s["events"][1].update(phase={}),
+            "event phase number": lambda s: s["events"][1].update(phase=5),
+            "event phase list of ids": lambda s: s["events"][1].update(phase=["1"]),
             "event extra key": lambda s: s["events"][1].update(x=1),
         }
         base = self.state_path().read_text()
@@ -573,6 +625,17 @@ class StateValidation(Env):
         done, nxt, rev, run = out.stdout.split()
         self.assertEqual(done.split(","), before.completed)
         self.assertEqual((nxt, int(rev), run), ("3V", before.revision, before.run_id))
+
+    def test_cli_fails_cleanly_on_malformed_event_phase(self):
+        base = self.state_path().read_text()
+        cli = [sys.executable, str(ROOT / "scripts" / "phase_ledger.py"), "--root", self.root]
+        for bad in ([], {}, 5, ["1"]):
+            st = json.loads(base)
+            st["events"][1]["phase"] = bad
+            self.state_path().write_text(json.dumps(st))
+            out = subprocess.run(cli + ["verify"], capture_output=True, text=True)
+            self.assertEqual(out.returncode, 1, repr(bad))
+            self.assertNotIn("Traceback", out.stderr, repr(bad))
 
     def test_cli_init_status_verify(self):
         other = Path(tempfile.mkdtemp())

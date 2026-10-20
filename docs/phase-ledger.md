@@ -81,8 +81,9 @@ carry the matching integer `phase`, and at least one of `gate == "pass"`, `gate_
 * `pass_with_deferred`: only with `allow_deferred=True`, non-empty `deferred_checks` and
   `tool_probe`, and `gate_passed` not true. The acceptance is stored and honoured on re-verification.
 * `FAIL_REQUIRES_USER_SIGNOFF` / `user_signoff_required`: only with
-  `user_signoff: {decision: "proceed", note: "..."}`. `PASS_WITH_BLOCKED_TIER_B` (phase 21) needs
-  the same sign-off.
+  `user_signoff: {decision: "proceed", note: "..."}`.
+* Phase 21 uses its documented producer format instead (see the table): `gate` is the constant
+  `"phase_21_deploy_polish"` and `verdict` is the outcome.
 
 Per-gate checks, taken from what each skill documents its producer writes:
 
@@ -101,7 +102,7 @@ Per-gate checks, taken from what each skill documents its producer writes:
 | `gate_methods.json` | 13 | `methods_artifact_id`; `subsection_count == 8`; `reproducibility_statement_present` |
 | `gate_phase_20a_methods_refresh.json` | 20a | `forbidden_hits == 0`; `figure_regenerated`; `frame_count > 0` |
 | `gate_repository_push.json` | 20V | validator verdict; non-empty `structural_results` |
-| `gate_phase21_deploy_polish.json` | 21 | `verdict == "PASS"` (or sign-off, above) |
+| `gate_phase21_deploy_polish.json` | 21 | `gate == "phase_21_deploy_polish"`; non-empty `checks` of `{tier A\|B, verdict PASS\|BLOCKED}`; empty `fix_list`; `verdict == "PASS"` (no blocked check, `deploy_accessible` not false) or `PASS_WITH_BLOCKED_TIER_B` (manual-checklist fallback: `deploy_accessible == false`, only Tier B checks blocked and at least one, non-empty `manual_checklist_artifact_id`; no sign-off in the gate, the coordinator collects the browser confirmation outside the ledger). `FAIL_REQUIRES_USER_SIGNOFF` passes only with `user_signoff`; `FAIL_REQUIRES_FIX` and `BLOCKED_DEPLOY_INACCESSIBLE` never pass |
 
 Counts such as `total_must_fix` must be real integers (`0`, not `false`, `0.0` or `"0"`).
 

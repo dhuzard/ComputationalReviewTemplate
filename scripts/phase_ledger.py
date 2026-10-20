@@ -339,6 +339,56 @@ def _verdict_problem(o, number, allow_deferred):
     return None, deferred
 
 
+PHASE21_GATE = "phase_21_deploy_polish"
+
+
+def _phase21_problem(o):
+    """Phase 21 as skills/comprev-deploy-polish.md documents it: `gate` is the constant gate name
+    and `verdict` carries the outcome. `PASS_WITH_BLOCKED_TIER_B` is the manual-checklist fallback
+    for an inaccessible deployment; it needs no extra sign-off in the gate itself."""
+    if not isinstance(o, dict):
+        return "verdict is not a JSON object"
+    if o.get("gate") != PHASE21_GATE:
+        return f"gate must be {PHASE21_GATE!r}, got {o.get('gate')!r}"
+    v = o.get("verdict")
+    if v == "FAIL_REQUIRES_USER_SIGNOFF":
+        return None if _signed_off(o) else "needs `user_signoff` {decision: proceed, note} before it can pass"
+    if v not in ("PASS", "PASS_WITH_BLOCKED_TIER_B"):
+        return f"verdict={v!r}"
+    if o.get("user_signoff_required") is True and not _signed_off(o):
+        return "needs `user_signoff` {decision: proceed, note} before it can pass"
+    checks = o.get("checks")
+    if not (isinstance(checks, dict) and checks):
+        return "`checks` must be a non-empty object"
+    blocked = False
+    for name, c in checks.items():
+        if not (isinstance(c, dict) and c.get("tier") in ("A", "B") and c.get("verdict") in ("PASS", "BLOCKED")):
+            return f"checks.{name} must be {{tier: A|B, verdict: PASS|BLOCKED}} to pass"
+        if c["verdict"] == "BLOCKED":
+            if c["tier"] != "B":
+                return f"checks.{name}: only Tier B checks may be blocked"
+            blocked = True
+    if o.get("fix_list") not in (None, []):
+        return "`fix_list` is non-empty although the verdict passes"
+    if isinstance(o.get("failures"), list) and o["failures"]:
+        return "`failures` is non-empty although the verdict passes"
+    if v == "PASS":
+        if blocked or o.get("deploy_accessible") is False:
+            return "verdict PASS contradicts blocked checks or deploy_accessible=false"
+        return None
+    if o.get("deploy_accessible") is not False or not blocked:
+        return "PASS_WITH_BLOCKED_TIER_B needs deploy_accessible=false and at least one blocked Tier B check"
+    if not _s(o.get("manual_checklist_artifact_id")):
+        return "PASS_WITH_BLOCKED_TIER_B needs `manual_checklist_artifact_id`"
+    return None
+
+
+def _file_problem(spec, o, allow_deferred):
+    if spec.id == "21":
+        return _phase21_problem(o), False
+    return _verdict_problem(o, spec.number, allow_deferred)
+
+
 # ------------------------------------------------------------ file helpers
 def _strict_loads(text):
     def pairs(items):
@@ -501,7 +551,8 @@ def _validate_state(st):
         _bad("events must hold exactly one entry per revision")
     for n, x in enumerate(ev):
         if not isinstance(x, dict) or set(x) != EVENT_KEYS or x["rev"] != n or not _i(x["rev"]) \
-                or x["op"] not in ("init", "advance", "reopen") or not (x["phase"] is None or x["phase"] in PHASES) \
+                or x["op"] not in ("init", "advance", "reopen") \
+                or not (x["phase"] is None or (isinstance(x["phase"], str) and x["phase"] in PHASES)) \
                 or not (x["reason"] is None or isinstance(x["reason"], str)) or not isinstance(x["at"], str):
             _bad(f"event {n} is malformed")
 
@@ -644,7 +695,7 @@ def _evaluate_gate(spec, root, report, allow_deferred):
         rel, obj, sha = _read_gate(root, spec.gate)
         out["gate_file"], out["gate_sha256"] = rel, sha
         if spec.verdict == "file":
-            problem, deferred = _verdict_problem(obj, spec.number, allow_deferred)
+            problem, deferred = _file_problem(spec, obj, allow_deferred)
             _require(problem is None, f"{rel}: {problem}")
             out["deferred_accepted"] = deferred
         if spec.check:
@@ -725,7 +776,7 @@ def _verify_entry(root, pid, e):
         if sha != e["gate_sha256"]:
             raise GateError(f"{rel} changed after phase {pid} was approved; reopen_phase('{pid}', ...) to redo it")
         if spec.verdict == "file":
-            problem, deferred = _verdict_problem(obj, spec.number, e["deferred_accepted"])
+            problem, deferred = _file_problem(spec, obj, e["deferred_accepted"])
             _require(problem is None and deferred == e["deferred_accepted"], f"{rel}: {problem or 'deferral changed'}")
         if spec.check:
             spec.check(obj)

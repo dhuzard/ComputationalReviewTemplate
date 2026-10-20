@@ -340,47 +340,89 @@ def _verdict_problem(o, number, allow_deferred):
 
 
 PHASE21_GATE = "phase_21_deploy_polish"
+# The binary checks of skills/comprev-deploy-polish.md and their tiers; a test diffs this against the
+# skill's table so the two cannot drift. Every one must be reported (an inapplicable conditional
+# check such as FIGURE_DROPDOWN_COMPLETE is reported PASS with evidence saying so).
+PHASE21_CHECKS = {
+    "BUILD_GREEN_AT_HEAD": "A", "DEPLOY_ARTIFACT_AVAILABLE": "A", "PER_PAGE_HTTP_200": "B",
+    "NO_FRONTMATTER_LEAK": "A", "FIGURE_DROPDOWN_COMPLETE": "A", "FIGURE_ASSETS_RESOLVE": "A",
+    "INTERNAL_LINK_HEALTH": "A", "EXTERNAL_LINK_HEALTH": "B", "PLUGIN_DATA_BOUND": "A",
+    "EVIDENCE_EXPLORER_STATUS_RENDERED": "A", "REVIEW_COMPATIBILITY_REPORT_VALID": "A",
+    "DIRECTIVE_RENDERED_OK": "A", "FORBIDDEN_LEXICON_DEPLOYED": "A", "AUTHOR_IDENTITY_DEPLOYED": "A",
+}
+PHASE21_BLOCKED_SPELLINGS = ("BLOCKED", "BLOCKED_DEPLOY_INACCESSIBLE")  # both appear in the skill
+
+
+def _phase21_confirmation_problem(o, blocked):
+    """The skill's Coordinator Loop Discipline requires explicit browser confirmation that the
+    blocked Tier B checks passed before the run is marked complete. Receipt: `user_signoff`
+    {decision: "proceed", note, browser_confirmed_checks: [every blocked Tier B check name]}."""
+    so = o.get("user_signoff")
+    if not _signed_off(o):
+        return "PASS_WITH_BLOCKED_TIER_B needs `user_signoff` {decision: proceed, note} (browser confirmation)"
+    got = so.get("browser_confirmed_checks")
+    if not (isinstance(got, list) and all(isinstance(x, str) for x in got) and set(got) == set(blocked)
+            and len(got) == len(blocked)):
+        return ("`user_signoff.browser_confirmed_checks` must list exactly the blocked Tier B checks: "
+                + ", ".join(sorted(blocked)))
+    return None
 
 
 def _phase21_problem(o):
     """Phase 21 as skills/comprev-deploy-polish.md documents it: `gate` is the constant gate name
-    and `verdict` carries the outcome. `PASS_WITH_BLOCKED_TIER_B` is the manual-checklist fallback
-    for an inaccessible deployment; it needs no extra sign-off in the gate itself."""
+    and `verdict` carries the outcome. Every documented check must be reported with its tier."""
     if not isinstance(o, dict):
         return "verdict is not a JSON object"
     if o.get("gate") != PHASE21_GATE:
         return f"gate must be {PHASE21_GATE!r}, got {o.get('gate')!r}"
     v = o.get("verdict")
-    if v == "FAIL_REQUIRES_USER_SIGNOFF":
-        return None if _signed_off(o) else "needs `user_signoff` {decision: proceed, note} before it can pass"
     if v not in ("PASS", "PASS_WITH_BLOCKED_TIER_B"):
-        return f"verdict={v!r}"
-    if o.get("user_signoff_required") is True and not _signed_off(o):
-        return "needs `user_signoff` {decision: proceed, note} before it can pass"
+        # FAIL_REQUIRES_USER_SIGNOFF only hands direction back to the user; it is never a pass.
+        return f"verdict={v!r} does not complete Phase 21"
     checks = o.get("checks")
-    if not (isinstance(checks, dict) and checks):
-        return "`checks` must be a non-empty object"
-    blocked = False
-    for name, c in checks.items():
-        if not (isinstance(c, dict) and c.get("tier") in ("A", "B") and c.get("verdict") in ("PASS", "BLOCKED")):
-            return f"checks.{name} must be {{tier: A|B, verdict: PASS|BLOCKED}} to pass"
-        if c["verdict"] == "BLOCKED":
-            if c["tier"] != "B":
-                return f"checks.{name}: only Tier B checks may be blocked"
-            blocked = True
+    if not isinstance(checks, dict):
+        return "`checks` must be an object"
+    missing = sorted(set(PHASE21_CHECKS) - set(checks))
+    if missing:
+        return "missing required checks: " + ", ".join(missing)
+    unknown = sorted(set(checks) - set(PHASE21_CHECKS))
+    if unknown:
+        return "unknown checks: " + ", ".join(unknown)
+    blocked = []
+    for name, tier in PHASE21_CHECKS.items():
+        c = checks[name]
+        if not isinstance(c, dict):
+            return f"checks.{name} must be an object"
+        if c.get("tier") != tier:
+            return f"checks.{name}.tier must be {tier!r}, got {c.get('tier')!r}"
+        cv = c.get("verdict")
+        if cv == "PASS":
+            if not (isinstance(c.get("evidence"), list) and c["evidence"]):
+                return f"checks.{name} PASS needs non-empty `evidence`"
+        elif cv in PHASE21_BLOCKED_SPELLINGS and tier == "B":
+            blocked.append(name)
+        else:
+            return f"checks.{name}.verdict={cv!r} is not a passing result for Tier {tier}"
     if o.get("fix_list") not in (None, []):
         return "`fix_list` is non-empty although the verdict passes"
     if isinstance(o.get("failures"), list) and o["failures"]:
         return "`failures` is non-empty although the verdict passes"
+    if o.get("user_signoff_required") is True and not _signed_off(o):
+        return "needs `user_signoff` {decision: proceed, note} before it can pass"
     if v == "PASS":
-        if blocked or o.get("deploy_accessible") is False:
-            return "verdict PASS contradicts blocked checks or deploy_accessible=false"
+        if blocked or o.get("deploy_accessible") is not True:
+            return "verdict PASS needs every check PASS and deploy_accessible=true"
+        if o.get("input_source") not in ("pages_artifact_tarball", "live_url"):
+            return "verdict PASS needs input_source pages_artifact_tarball or live_url"
         return None
-    if o.get("deploy_accessible") is not False or not blocked:
-        return "PASS_WITH_BLOCKED_TIER_B needs deploy_accessible=false and at least one blocked Tier B check"
+    tier_b = [n for n, t in PHASE21_CHECKS.items() if t == "B"]
+    if o.get("deploy_accessible") is not False or sorted(blocked) != sorted(tier_b):
+        return "PASS_WITH_BLOCKED_TIER_B needs deploy_accessible=false and every Tier B check blocked"
+    if o.get("input_source") != "pages_artifact_tarball":
+        return "PASS_WITH_BLOCKED_TIER_B needs input_source pages_artifact_tarball (Tier A ran on it)"
     if not _s(o.get("manual_checklist_artifact_id")):
         return "PASS_WITH_BLOCKED_TIER_B needs `manual_checklist_artifact_id`"
-    return None
+    return _phase21_confirmation_problem(o, blocked)
 
 
 def _file_problem(spec, o, allow_deferred):

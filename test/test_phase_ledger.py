@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,20 +21,33 @@ VALIDATOR = {"gate": "pass", "gate_passed": True, "structural_results": {"X": "p
              "section_md_vids_final": {"01.md": "v1"}}
 
 
+def _skill_phase21_checks():
+    """check -> tier, extracted from the Binary Checks table of the deploy-polish skill."""
+    text = (ROOT / "skills" / "comprev-deploy-polish.md").read_text()
+    rows = re.findall(r"^\| `([A-Z0-9_]+)` \| ([AB]) \|", text, re.M)
+    return dict(rows)
+
+
+SKILL_CHECKS = _skill_phase21_checks()
+TIER_B = sorted(n for n, t in SKILL_CHECKS.items() if t == "B")
+
+
 # Shape documented in skills/comprev-deploy-polish.md ("Fix-List Output").
+def _p21_checks(blocked=(), spelling="BLOCKED"):
+    return {n: {"verdict": spelling if n in blocked else "PASS", "tier": t,
+                "evidence": [] if n in blocked else [f"{n}: ok"]} for n, t in SKILL_CHECKS.items()}
+
+
 PHASE21_PASS = {
     "gate": "phase_21_deploy_polish", "verdict": "PASS", "deploy_accessible": True,
-    "input_source": "pages_artifact_tarball",
-    "checks": {"BUILD_GREEN_AT_HEAD": {"verdict": "PASS", "tier": "A", "evidence": ["run 1: success"]},
-               "PER_PAGE_HTTP_200": {"verdict": "PASS", "tier": "B", "evidence": ["all 200"]}},
-    "fix_list": [],
+    "input_source": "pages_artifact_tarball", "checks": _p21_checks(), "fix_list": [],
 }
 PHASE21_BLOCKED = dict(
-    PHASE21_PASS, verdict="PASS_WITH_BLOCKED_TIER_B", deploy_accessible=False, input_source="none",
-    checks={"BUILD_GREEN_AT_HEAD": {"verdict": "PASS", "tier": "A", "evidence": []},
-            "PER_PAGE_HTTP_200": {"verdict": "BLOCKED", "tier": "B", "evidence": []},
-            "EXTERNAL_LINK_HEALTH": {"verdict": "BLOCKED", "tier": "B", "evidence": []}},
-    manual_checklist_artifact_id="manual_phase21_checklist.md")
+    PHASE21_PASS, verdict="PASS_WITH_BLOCKED_TIER_B", deploy_accessible=False,
+    checks=_p21_checks(TIER_B), manual_checklist_artifact_id="manual_phase21_checklist.md")
+PHASE21_CONFIRMED = dict(
+    PHASE21_BLOCKED, user_signoff={"decision": "proceed", "note": "verified in browser",
+                                   "browser_confirmed_checks": TIER_B})
 
 
 def gate_body(pid):
@@ -344,8 +358,13 @@ class GateContracts(Env):
         self.assertTrue(pl.load_ledger(self.root).phases["2V"]["deferred_accepted"])
         pl.require_phase("2V", root=self.root)  # re-verification honours the recorded acceptance
 
+    def test_phase21_check_set_matches_skill_table(self):
+        self.assertEqual(len(SKILL_CHECKS), 14)
+        self.assertEqual(pl.PHASE21_CHECKS, SKILL_CHECKS)
+
     def test_phase21_documented_pass_forms(self):
-        for body in (PHASE21_PASS, PHASE21_BLOCKED):
+        alt = dict(PHASE21_CONFIRMED, checks=_p21_checks(TIER_B, "BLOCKED_DEPLOY_INACCESSIBLE"))
+        for body in (PHASE21_PASS, PHASE21_CONFIRMED, alt):
             self.setUp()
             self.reach("21")
             self.write_gate("21", body)
@@ -355,7 +374,22 @@ class GateContracts(Env):
     def test_phase21_rejects_failures_and_contradictions(self):
         def mut(base, **kw):
             return dict(copy.deepcopy(base), **kw)
-        bad_check = {"X": {"verdict": "FAIL", "tier": "A", "evidence": []}}
+
+        def with_check(base, name, **kw):
+            b = copy.deepcopy(base)
+            b["checks"][name] = dict(b["checks"][name], **kw)
+            return b
+
+        def without(base, name):
+            b = copy.deepcopy(base)
+            del b["checks"][name]
+            return b
+
+        def with_extra(base):
+            b = copy.deepcopy(base)
+            b["checks"]["ARBITRARY_PASS"] = {"verdict": "PASS", "tier": "A", "evidence": ["x"]}
+            return b
+
         cases = [
             {"verdict": "PASS"},  # legacy bare form: no gate name / checks
             mut(PHASE21_PASS, gate="pass"),
@@ -363,28 +397,80 @@ class GateContracts(Env):
             mut(PHASE21_PASS, verdict="BLOCKED_DEPLOY_INACCESSIBLE"),
             mut(PHASE21_PASS, verdict="FAIL_REQUIRES_USER_SIGNOFF"),
             mut(PHASE21_PASS, verdict=True),
-            mut(PHASE21_PASS, checks=bad_check),
             mut(PHASE21_PASS, checks={}),
+            mut(PHASE21_PASS, checks=[]),
+            mut(PHASE21_PASS, checks={"ARBITRARY_PASS": {"verdict": "PASS", "tier": "A", "evidence": ["x"]}}),
             mut(PHASE21_PASS, fix_list=[{"check": "X"}]),
+            mut(PHASE21_PASS, failures=["x"]),
             mut(PHASE21_PASS, deploy_accessible=False),
+            mut(PHASE21_PASS, deploy_accessible=None),
+            {k: v for k, v in PHASE21_PASS.items() if k != "deploy_accessible"},
+            mut(PHASE21_PASS, input_source="none"),
             mut(PHASE21_PASS, user_signoff_required=True),
+            with_extra(PHASE21_PASS),
+            with_check(PHASE21_PASS, "BUILD_GREEN_AT_HEAD", verdict="FAIL"),
+            with_check(PHASE21_PASS, "PER_PAGE_HTTP_200", verdict="FAIL"),
+            with_check(PHASE21_PASS, "PER_PAGE_HTTP_200", verdict="BLOCKED"),  # PASS with BLOCKED
+            with_check(PHASE21_PASS, "BUILD_GREEN_AT_HEAD", verdict="BLOCKED"),
+            with_check(PHASE21_PASS, "BUILD_GREEN_AT_HEAD", tier="B"),  # wrong tier
+            with_check(PHASE21_PASS, "PER_PAGE_HTTP_200", tier="A"),
+            with_check(PHASE21_PASS, "BUILD_GREEN_AT_HEAD", tier=None),
+            with_check(PHASE21_PASS, "FIGURE_DROPDOWN_COMPLETE", evidence=[]),
+            with_check(PHASE21_PASS, "FIGURE_DROPDOWN_COMPLETE", verdict="N/A"),
+            mut(PHASE21_PASS, checks=dict(PHASE21_PASS["checks"], BUILD_GREEN_AT_HEAD="PASS")),
             mut(PHASE21_BLOCKED, deploy_accessible=True),
             mut(PHASE21_BLOCKED, manual_checklist_artifact_id=None),
-            mut(PHASE21_BLOCKED, checks={"A1": {"verdict": "BLOCKED", "tier": "A"}}),
-            mut(PHASE21_BLOCKED, checks=dict(PHASE21_PASS["checks"])),  # nothing actually blocked
-            mut(PHASE21_BLOCKED, checks=dict(PHASE21_BLOCKED["checks"], **bad_check)),
+            mut(PHASE21_BLOCKED, manual_checklist_artifact_id="  "),
+            mut(PHASE21_BLOCKED, input_source="none"),
+            mut(PHASE21_BLOCKED, checks=_p21_checks()),  # nothing actually blocked
+            with_check(PHASE21_BLOCKED, "BUILD_GREEN_AT_HEAD", verdict="BLOCKED", evidence=[]),
+            with_check(PHASE21_BLOCKED, "BUILD_GREEN_AT_HEAD", verdict="FAIL"),
+            with_check(PHASE21_BLOCKED, "BUILD_GREEN_AT_HEAD", verdict="BLOCKED_DEPLOY_INACCESSIBLE"),
+            with_extra(PHASE21_BLOCKED),
+        ]
+        cases += [mut(PHASE21_BLOCKED, checks=_p21_checks(TIER_B[:1])),  # a Tier B check passing
+                  mut(PHASE21_BLOCKED, checks=_p21_checks(TIER_B[1:]))]
+        cases += [without(PHASE21_PASS, n) for n in SKILL_CHECKS]
+        cases += [without(PHASE21_CONFIRMED, n) for n in SKILL_CHECKS]
+        for i, body in enumerate(cases):
+            with self.subTest(i):
+                self.setUp()
+                self.expect_rejected("21", body)
+
+    def test_phase21_blocked_fallback_needs_browser_confirmation(self):
+        def so(**kw):
+            return dict(PHASE21_BLOCKED, user_signoff=dict(
+                {"decision": "proceed", "note": "ok", "browser_confirmed_checks": TIER_B}, **kw))
+
+        cases = [
+            PHASE21_BLOCKED,  # no receipt: run is not complete
+            dict(PHASE21_BLOCKED, user_signoff="yes"),
+            so(decision="abort"), so(note=""), so(note=None),
+            so(browser_confirmed_checks=[]), so(browser_confirmed_checks=TIER_B[:1]),
+            so(browser_confirmed_checks=TIER_B + ["BUILD_GREEN_AT_HEAD"]),
+            so(browser_confirmed_checks=TIER_B + TIER_B[:1]),
+            so(browser_confirmed_checks="PER_PAGE_HTTP_200"), so(browser_confirmed_checks=None),
         ]
         for i, body in enumerate(cases):
             with self.subTest(i):
                 self.setUp()
                 self.expect_rejected("21", body)
 
-    def test_phase21_user_signoff_override_still_works(self):
-        body = {"gate": "phase_21_deploy_polish", "verdict": "FAIL_REQUIRES_USER_SIGNOFF",
-                "user_signoff": {"decision": "proceed", "note": "accepted residual fix-list"}}
-        self.reach("21")
-        self.write_gate("21", body)
-        pl.advance_phase("21", "vid", ["v"], root=self.root)
+    def test_phase21_user_signoff_never_bypasses_failures(self):
+        signoff = {"decision": "proceed", "note": "retry anyway", "browser_confirmed_checks": TIER_B}
+        failed = copy.deepcopy(PHASE21_PASS)
+        failed["checks"]["NO_FRONTMATTER_LEAK"] = {"verdict": "FAIL", "tier": "A", "evidence": ["leak"]}
+        cases = [
+            {"gate": "phase_21_deploy_polish", "verdict": "FAIL_REQUIRES_USER_SIGNOFF", "user_signoff": signoff},
+            dict(failed, verdict="FAIL_REQUIRES_USER_SIGNOFF", user_signoff=signoff),
+            dict(failed, user_signoff=signoff),
+            dict(PHASE21_PASS, checks={}, verdict="FAIL_REQUIRES_USER_SIGNOFF", user_signoff=signoff),
+            dict(PHASE21_PASS, user_signoff_required=True, user_signoff=signoff, checks={}),
+        ]
+        for i, body in enumerate(cases):
+            with self.subTest(i):
+                self.setUp()
+                self.expect_rejected("21", body)
 
     def test_contract_fields_per_gate(self):
         cases = {

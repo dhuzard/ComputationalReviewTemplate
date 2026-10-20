@@ -615,6 +615,53 @@ class IntegrityAfterApproval(Env):
         with self.assertRaisesRegex(pl.GateError, "changed after"):
             pl.restart(self.root)
 
+    def _assert_advance_rejected_unchanged(self, pid, exc=pl.GateError):
+        before = self.state_path().read_bytes()
+        rev = pl.load_ledger(self.root).revision
+        with self.assertRaises(exc):
+            self.advance(pid)
+        self.assertEqual(self.state_path().read_bytes(), before)
+        self.assertEqual(pl.load_ledger(self.root).revision, rev)
+
+    def test_advance_rejects_deleted_immediate_prerequisite_gate(self):
+        (self.tmp / "provenance" / "gate_figure_audit.json").unlink()
+        self._assert_advance_rejected_unchanged("7")
+
+    def test_advance_rejects_deleted_non_immediate_prerequisite_gate(self):
+        # the reproduced bypass: 1 and 1V complete, scope gate deleted, then phase 2
+        shutil.rmtree(self.tmp)
+        self.tmp.mkdir()
+        pl.init_ledger(self.root)
+        self.run_to("1V")
+        (self.tmp / "provenance" / "gate_scope.json").unlink()
+        self._assert_advance_rejected_unchanged("2")
+        self.assertEqual(pl.load_ledger(self.root).completed, ["1", "1V"])
+
+    def test_advance_rejects_modified_earlier_gate(self):
+        g = self.tmp / "provenance" / "gate_scaffold_approved.json"
+        g.write_text(json.dumps(dict(gate_body("4"), note="edited")))
+        self._assert_advance_rejected_unchanged("7")
+
+    def test_advance_rejects_modified_immediate_prerequisite_gate(self):
+        g = self.tmp / "provenance" / "gate_figure_audit.json"
+        g.write_text(json.dumps(dict(gate_body("6"), note="edited")))
+        self._assert_advance_rejected_unchanged("7")
+
+    def test_advance_rejects_missing_or_changed_prior_output(self):
+        self.run_to("14V")
+        self.advance("15")
+        out = self.tmp / "provenance" / "citation_triples.json"
+        out.write_text("[2]")
+        self._assert_advance_rejected_unchanged("15V")
+        out.unlink()
+        self._assert_advance_rejected_unchanged("15V")
+
+    def test_advance_succeeds_with_intact_prerequisites_and_after_restart(self):
+        self.advance("7")
+        pl.restart(self.root)
+        self.advance("7V")
+        self.assertEqual(pl.load_ledger(self.root).completed[-2:], ["7", "7V"])
+
     def test_reopen_resets_the_phase_and_everything_after_and_is_audited(self):
         self.run_to("8")
         led = pl.reopen_phase("6", "critic found a REDESIGN", root=self.root)

@@ -782,6 +782,10 @@ def advance_phase(phase, artifact_id, child_ids=None, *, report=None, allow_defe
         prev = _previous(pid)
         if prev and st["phases"][prev]["status"] != "complete":
             raise PhaseBlocked(f"phase {pid} blocked: phase {prev} is not complete")
+        # Every earlier receipt must still match the disk, not just the previous status.
+        for p in PHASE_ORDER[:PHASE_ORDER.index(pid)]:
+            if st["phases"][p]["status"] == "complete":
+                _verify_entry(root, p, st["phases"][p])
         other = INDEPENDENT_OF.get(pid)
         if other and set(ids) & set(st["phases"][other]["child_ids"]):
             raise GateError(f"phase {pid} must run in different agent frames than phase {other}")

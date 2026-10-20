@@ -35,7 +35,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
-SCANNER_VERSION = "comprev.citation_scanner/1"
+SCANNER_VERSION = "comprev.citation_scanner/2"
 OCC_SCHEMA = "comprev.citation_occurrences/1"
 VERDICT_SCHEMA = "comprev.citation_verification/1"
 COVERAGE_SCHEMA = "comprev.citation_coverage/1"
@@ -660,11 +660,12 @@ class _Doc:
             else:
                 if blank:
                     i, col = n, c
-                elif c >= ct["cc"]:
-                    while i < n and col < ct["cc"] and raw[i] in " \t":
+                elif c >= base + ct["rel"]:
+                    # the required indentation is relative to the parent container's content column
+                    base += ct["rel"]
+                    while i < n and col < base and raw[i] in " \t":
                         col += (4 - col % 4) if raw[i] == "\t" else 1
                         i += 1
-                    base = ct["cc"]
                 else:
                     break
             m += 1
@@ -687,8 +688,8 @@ class _Doc:
             if ls is None or (restricted and not new and not ls[3]):
                 break
             cc, i, col, _ = ls
+            new.append({"t": "l", "rel": cc - base})
             base = cc
-            new.append({"t": "l", "cc": cc})
         return new, i, col, base
 
     def _close_entry(self, entry):
@@ -782,6 +783,10 @@ class _Doc:
                 else:
                     kind = "prose"
             if m < len(open_):
+                if kind == "prose" and not new and para and ind >= 4 and stripped.startswith(">"):
+                    # an indented `>` under an unmatched list item: renderers disagree whether it is lazy text
+                    raise _ScanFail("unsupported_container_layout", "indented quote marker under a list item whose "
+                                    "continuation is ambiguous", li + 1)
                 if kind == "prose" and not new and para:
                     add_line(li, s + i2)  # lazy paragraph continuation: the containers stay open
                     continue

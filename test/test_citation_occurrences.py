@@ -1472,6 +1472,118 @@ class VerdictIdentifierShapes(Tmp):
 
 
 # ------------------------------------------------ schema / runtime parity
+class ContainerRelativeIndentation(unittest.TestCase):
+    """List continuation is measured from the parent container's content column, never the physical column."""
+
+    CASES = [
+        # (text, expected keys): known renderings, so CI needs no markdown parser
+        ("> - ```\n  > {cite:p}`A`\n> ```\n> ```\n", ["A"]),
+        ("  > - ```\n>   {cite:p}`A`\n> ```\n> ```\n", []),
+        ("> - ```\n>   {cite:p}`A`\n>   ```\n", []),
+        ("> - x\n>   {cite:p}`A`\n", ["A"]),
+        ("> - ```\n>  {cite:p}`A`\n> ```\n> ```\n", ["A"]),
+        ("> > - ```\n> >   {cite:p}`A`\n> >   ```\n", []),
+        ("> 1. ```\n>    {cite:p}`A`\n>    ```\n", []),
+        ("> 1. ```\n>   {cite:p}`A`\n> ```\n> ```\n", ["A"]),
+        ("- > ```\n  > {cite:p}`A`\n  > ```\n", []),
+        ("-\t```\n\t{cite:p}`A`\n\t```\n", []),
+        (">\t- ```\n>\t  {cite:p}`A`\n>\t  ```\n", []),
+    ]
+
+    def test_known_renderings(self):
+        for text, keys in self.CASES:
+            with self.subTest(text=text):
+                self.assertEqual([k for _, _, k in found(text)], keys)
+
+    def test_ambiguous_indented_quote_under_an_unmatched_list_item_is_unsupported(self):
+        self.assertEqual(failure("-    > x\n    > {cite:p}`A`\n"), "unsupported_container_layout")
+
+    def test_scanner_version_two_changes_the_revision_of_identical_sources(self):
+        self.assertEqual(co.SCANNER_VERSION, "comprev.citation_scanner/2")
+        with tempfile.TemporaryDirectory() as d:
+            make_manuscript(d)
+            r2 = co.scan_sources(d).revision
+            with mock.patch.object(co, "SCANNER_VERSION", "comprev.citation_scanner/1"):
+                self.assertNotEqual(co.scan_sources(d).revision, r2)
+
+    def test_agrees_with_a_reference_parser_over_a_container_matrix(self):
+        try:
+            from markdown_it import MarkdownIt
+        except ImportError:
+            self.skipTest("markdown_it is a development-time oracle only")
+        md = MarkdownIt("commonmark")
+        key = re.compile(r"\{cite:p\}`A`")
+        outer = ["> ", ">", "  > ", "- ", "-  ", "-   ", "-    ", "1. ", "10. ", "1.  ", "> - ", "> -  ", "  > - ",
+                 "> > ", "- > ", "> 1. ", "- - ", "\t", ">\t", "-\t"]
+        pre = ["", " ", "  ", "   ", "    ", "     ", "\t", "> ", ">  ", ">   ", ">\t", "> > ", "  - "]
+        unsupported = checked = 0
+        for o in outer:
+            for pf in pre:
+                for pf2 in pre:
+                    text = o + "```\n" + pf + "{cite:p}`A`\n" + pf2 + "```\n"
+                    expected = sum(len(key.findall(t.content)) for t in md.parse(text) if t.type == "inline")
+                    try:
+                        got = len(co.scan_markdown(text))
+                    except co._ScanFail:
+                        unsupported += 1  # explicit refusal is always allowed; silent disagreement is not
+                        continue
+                    checked += 1
+                    self.assertEqual(got, expected, repr(text))
+        self.assertGreater(checked, 500)
+
+
+class NullableOptionalSchema(Tmp):
+    """Optional evidence / attestation: runtime and schema agree on null, absent and VERIFIED."""
+
+    def setUp(self):
+        super().setUp()
+        self.ver = json.loads((ROOT / "provenance/citation_verdicts.schema.json").read_text())
+        make_manuscript(self.root)
+        stage_extraction(self.root)
+        self.env = stage_verification(self.root)
+        self.scan = co.scan_sources(self.root)
+
+    def both(self, env):
+        return co.check_verdicts(self.root, env, self.scan), schema_errors(env, self.ver, self.ver)
+
+    def non_verified(self):
+        env = copy.deepcopy(self.env)
+        v = env["verdicts"][0]
+        v.update(category="MISATTRIBUTED", failed_at_step=2, verification_depth=None, supporting_passage=None,
+                 details="no retrievable text; manual review needed")
+        v.pop("evidence", None)
+        v.pop("scientific_checks_attestation", None)
+        return env, v
+
+    def test_non_verified_with_null_or_absent_optionals_is_valid_in_both(self):
+        for ev in ("absent", None):
+            for at in ("absent", None):
+                with self.subTest(evidence=ev, attestation=at):
+                    env, v = self.non_verified()
+                    if ev == "absent" and at == "absent":
+                        pass
+                    else:
+                        v["evidence"], v["scientific_checks_attestation"] = None, None
+                    self.assertEqual(self.both(env), ([], []))
+
+    def test_verified_requires_non_null_evidence_and_attestation_in_both(self):
+        for field in ("evidence", "scientific_checks_attestation"):
+            for how in ("null", "absent"):
+                with self.subTest(field=field, how=how):
+                    env = copy.deepcopy(self.env)
+                    v = next(x for x in env["verdicts"] if x["category"] == "VERIFIED")
+                    if how == "null":
+                        v[field] = None
+                    else:
+                        v.pop(field)
+                    runtime, schema = self.both(env)
+                    self.assertNotEqual(runtime, [])
+                    self.assertNotEqual(schema, [])
+
+    def test_unchanged_verified_fixture_still_passes_both(self):
+        self.assertEqual(self.both(self.env), ([], []))
+
+
 class OptionalFieldParity(Tmp):
     def setUp(self):
         super().setUp()

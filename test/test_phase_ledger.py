@@ -1360,6 +1360,22 @@ class CitationContract(Env):
         ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root), pl.CitationGateError)
         self.assertEqual(self.codes(ctx), ["missing_occurrence"])
 
+    def test_relative_list_indentation_in_quotes_cannot_hide_a_citation_from_the_ledger(self):
+        # a list item inside a quote continues by indentation relative to the quote content, not by physical column
+        for text, expect in (("> - ```\n  > {cite:p}`A`\n> ```\n> ```\n", ["A"]),   # paragraph, outside the fence
+                             ("  > - ```\n>   {cite:p}`A`\n> ```\n> ```\n", [])):  # inside the fence: code
+            with self.subTest(text=text):
+                self.hidden_cite_manuscript()
+                (self.tmp / "content/claim.md").write_text(text)
+                co.create_snapshot(self.root, supersede=True)
+                scan = co.scan_sources(self.root)
+                self.assertEqual([o["citation_key"] for o in scan.occurrences], expect)
+                if expect:
+                    tco.write_json(self.root, co.EXTRACTION, self.empty_artifacts(scan))
+                    ctx = self.unchanged(lambda: pl.advance_phase("15", "v", ["a"], root=self.root),
+                                         pl.CitationGateError)
+                    self.assertEqual(self.codes(ctx), ["missing_occurrence"])
+
     def test_empty_coverage_and_empty_verdicts_cannot_follow_an_omitted_visible_citation(self):
         self.hidden_cite_manuscript()
         self.advance("15")

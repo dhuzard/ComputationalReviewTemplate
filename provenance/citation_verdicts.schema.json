@@ -29,9 +29,18 @@
         "details": {"type": ["string", "null"]},
         "correct_metadata": {"type": ["object", "null"]},
         "suggested_action": {"type": ["string", "null"]},
-        "evidence": {"oneOf": [{"$ref": "#/$defs/evidence_available"}, {"$ref": "#/$defs/evidence_unavailable"}]},
-        "scientific_checks_attestation": {"$ref": "#/$defs/attestation"}
-      }
+        "evidence": {"oneOf": [{"$ref": "#/$defs/evidence_available"}, {"$ref": "#/$defs/evidence_unavailable"}, {"type": "null"}], "description": "null or absent means no evidence was retrieved; only a non-VERIFIED verdict may carry that"},
+        "scientific_checks_attestation": {"oneOf": [{"$ref": "#/$defs/attestation"}, {"type": "null"}], "description": "null or absent is only valid for a non-VERIFIED verdict"}
+      },
+      "allOf": [
+        {"if": {"required": ["category"], "properties": {"category": {"const": "VERIFIED"}}},
+         "then": {
+           "required": ["evidence", "scientific_checks_attestation"],
+           "properties": {
+             "evidence": {"$ref": "#/$defs/evidence_available"},
+             "scientific_checks_attestation": {"$ref": "#/$defs/attestation"}
+           }}}
+      ]
     },
     "evidence_available": {
       "type": "object",

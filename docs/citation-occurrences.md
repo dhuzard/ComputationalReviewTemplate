@@ -74,6 +74,17 @@ makes a new revision. `occurrence_id` is the sha256 of the canonical JSON of
 zero-based half-open UTF-8 byte range of the whole role (CRLF, bare CR and non-ASCII text
 included), `line_range` the one-based inclusive lines it touches.
 
+## Scanner version and regeneration
+
+The scanner version is `comprev.citation_scanner/2` and is part of the revision hash. Version 2 fixes
+list-item continuation inside block quotes: the indentation a list item needs is stored and compared
+*relative to its parent container's content column* (tabs still stop at physical multiples of four),
+so a quote's leading spaces or `>` marker can no longer be mistaken for list indentation. Because the
+revision hash changes, every artifact produced by version 1 (snapshot, extraction, coverage,
+verdicts) is deliberately reported stale (`scanner_version_mismatch` / `stale_snapshot`) and is never
+upgraded in place. To regenerate: restart or reopen at Phase 15 so a new snapshot and extraction are
+written, then redo 15V and 16 against the new revision. Data schema versions are unchanged (same shape).
+
 ## Files
 
 | File | Written by | Schema |
@@ -156,9 +167,18 @@ refusals `unsupported_cite_role`, `malformed_cite_role`, `unterminated_role`, `e
 `invalid_key`, `unterminated_fence`, `unterminated_comment`, `unterminated_frontmatter`,
 `citation_in_frontmatter`, `citation_in_include`, `citation_in_comment_line`,
 `citation_in_reference_definition`, `ambiguous_link_destination`, `unsupported_citation_syntax`,
-`unsupported_directive_citation`, `unsupported_include`, `include_marker_not_found`.
+`unsupported_directive_citation`, `unsupported_include`, `include_marker_not_found`,
+`unsupported_container_layout`.
 
 ## Limitations
+
+* Container layouts renderers disagree on are refused rather than guessed: an indented (4+ columns)
+  `>` line under a list item whose continuation does not match raises `unsupported_container_layout`.
+  A development-only comparison against `markdown_it` over quote/list/indent/tab combinations found no
+  silent disagreement; it is optional in CI (skipped if `markdown_it` is absent).
+* Verdict `evidence` and `scientific_checks_attestation` may be `null` or absent on a non-VERIFIED
+  verdict (nothing retrieved, nothing attested); the schema and the runtime agree. A VERIFIED verdict
+  must carry non-null available, correctly hashed evidence and the five-step attestation.
 
 * The scanner is a conservative line/container/inline state machine, not a full CommonMark/MyST parser. A
   construct it cannot classify is either refused or scanned as prose; it never guesses "code" to make

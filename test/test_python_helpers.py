@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import frames_ledger  # noqa: E402
+import phase_ledger  # noqa: E402
 import skill_catalog  # noqa: E402
 
 SKILLS = sorted((ROOT / "skills").glob("*.md"))
@@ -112,12 +113,16 @@ class FrameLedgerBridge(unittest.TestCase):
         scope = {
             "json": json, "MODEL_ID": "test-model", "PROJECT_ID": "p",
             "datetime": __import__("datetime").datetime, "timezone": __import__("datetime").timezone,
-            "phase_ledger": {"1": {"status": "complete"}}, "first_frame_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            "first_frame_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         }
         (self.tmp / "provenance" / "pipeline_version.json").write_text('{"pipeline_version": 30}')
         with Cwd(self.tmp):
+            with self.assertRaises(phase_ledger.LedgerMissing):  # no implicit initialisation
+                exec(code, dict(scope))
+            phase_ledger.init_ledger(".")
             exec(code, scope)
         self.assertEqual(scope["methods_data"]["total_frames"], 3)
+        self.assertEqual(scope["methods_data"]["phases_completed_at_draft_time"], [])
 
     def test_documented_phase_20a_snippet_reads_the_bridge_file(self):
         code = block_containing(ROOT / "skills" / "comprev-dataml-phases.md", "m6_pattern")
@@ -161,7 +166,7 @@ class ValidatorFrameCountBridge(unittest.TestCase):
         self.assertNotIn("host.frames(", check)
         preserve = (ROOT / "skills" / "comprev-dataml-phases.md").read_text(encoding="utf-8")
         preserve = preserve.split("4. **Preserve** all scaffold-owned", 1)[1].split("5. **Verify file signatures**", 1)[0]
-        for helper in ("scripts/frames_ledger.py", "scripts/skill_catalog.py"):
+        for helper in ("scripts/frames_ledger.py", "scripts/phase_ledger.py", "scripts/skill_catalog.py"):
             self.assertIn(f"`{helper}`", preserve)
         with Cwd(self.tmp):
             frames = frames_ledger.load_frames()

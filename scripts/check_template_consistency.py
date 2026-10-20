@@ -16,6 +16,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import phase_ledger  # noqa: E402
 
 
 def load():
@@ -42,7 +45,10 @@ def audit():
     index = phase_index(orchestrator)
     failures = []
 
+    total = []
+
     def check(name, ok, detail=""):
+        total.append(name)
         print("  {:34s} {}".format(name, "ok" if ok else "FAIL " + detail))
         if not ok:
             failures.append((name, detail))
@@ -113,7 +119,26 @@ def audit():
     declared = set(re.findall(r"plugins/([A-Za-z0-9_.-]+\.mjs)", (ROOT / "myst.yml").read_text(encoding="utf-8")))
     check("PLUGINS_DECLARED", not (local_plugins - declared), str(sorted(local_plugins - declared)))
 
-    print("\n{}/{} checks passed".format(12 - len(failures), 12))
+    # the phase ledger agrees with the phase index and with how skills call it
+    ids = re.findall(r"^\|\s*(\d+[A-Za-z]?V?)\s*\|[^|]*\|[^|]*\|", orchestrator, re.M)
+    in_order = tuple(i for n, i in enumerate(ids) if i not in ids[:n])
+    check("LEDGER_MATCHES_PHASE_INDEX", in_order == phase_ledger.PHASE_ORDER,
+          "index {} vs ledger {}".format(in_order, phase_ledger.PHASE_ORDER))
+    check("LEDGER_GATES_ROUTED", set(phase_ledger.GATES) == gates_orc,
+          str(sorted(set(phase_ledger.GATES) ^ gates_orc)))
+    calls, unimported = [], []
+    for k, v in skills.items():
+        for block in re.findall(r"^```python[^\n]*\n(.*?)^```", v, re.M | re.S):
+            for fn, arg in re.findall(r"\b(require_phase|advance_phase|check_gate)\(\s*['\"]([^'\"]+)['\"]", block):
+                known = phase_ledger.GATES if fn == "check_gate" else phase_ledger.PHASES
+                if arg not in known:
+                    calls.append("{}: {}({!r})".format(k, fn, arg))
+                if "from phase_ledger import" not in block:
+                    unimported.append("{}: {}".format(k, fn))
+    check("LEDGER_CALLS_CANONICAL", not calls, str(calls))
+    check("LEDGER_CALLS_IMPORTED", not unimported, str(sorted(set(unimported))))
+
+    print("\n{}/{} checks passed".format(len(total) - len(failures), len(total)))
     return 1 if failures else 0
 
 

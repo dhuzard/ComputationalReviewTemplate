@@ -97,7 +97,10 @@ gate_data = {
     'figures_per_section_met': True,  # ≥2 per section, ≥1 Type B
 }
 json.dump(gate_data, open('gate_scaffold_approved.json', 'w'), indent=2)
-advance_phase('2_scaffold', '<saved_version_id>')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import advance_phase
+advance_phase('4', gate_vid, scaffold_frame_ids)   # gate_vid: version id of the saved gate file
 ```
 
 

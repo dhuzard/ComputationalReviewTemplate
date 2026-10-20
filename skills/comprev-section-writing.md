@@ -24,8 +24,11 @@ Section writers load `comprev-figure-construction` for figure production.
 MUST verify:
 
 ```python
-require_phase('3b_figure_audit')  # Asserts Phase 6 is complete
-audit_gate_vid = check_gate('gate_figure_audit.json')
+import sys
+sys.path.insert(0, 'scripts')
+from phase_ledger import require_phase, check_gate
+require_phase('6')  # raises unless Phase 6 is complete and its gate intact
+audit_gate_vid = check_gate('gate_figure_audit.json')  # pinned artifact id of the registered gate
 ```
 
 Each Phase 7 delegation template MUST include the Phase 6 verdicts artifact: `{{artifact:<audit_gate_vid>}}`. If the artifact doesn't exist, the delegation cannot be assembled — this is the structural enforcement.

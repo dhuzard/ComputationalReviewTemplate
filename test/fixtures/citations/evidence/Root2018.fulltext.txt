@@ -1,0 +1,1 @@
+A root-level source reports the figure data.

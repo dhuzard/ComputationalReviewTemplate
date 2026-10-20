@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import citation_occurrences  # noqa: E402
 import phase_ledger  # noqa: E402
 
 
@@ -137,6 +138,35 @@ def audit():
                     unimported.append("{}: {}".format(k, fn))
     check("LEDGER_CALLS_CANONICAL", not calls, str(calls))
     check("LEDGER_CALLS_IMPORTED", not unimported, str(sorted(set(unimported))))
+
+    # the citation contract: schema files agree with the runtime, and the Phase 14 push preserves them
+    problems = []
+    try:
+        occ = json.loads((ROOT / "provenance" / "citation_occurrences.schema.json").read_text(encoding="utf-8"))
+        ver = json.loads((ROOT / "provenance" / "citation_verdicts.schema.json").read_text(encoding="utf-8"))
+        co = citation_occurrences
+        if occ["$id"] != co.OCC_SCHEMA or occ["properties"]["schema_version"]["const"] != co.OCC_SCHEMA:
+            problems.append("occurrence schema version")
+        if set(occ["required"]) != set(co.ENVELOPE_KEYS) or set(
+                occ["$defs"]["occurrence"]["required"]) != set(co.OCC_REQUIRED):
+            problems.append("occurrence required fields")
+        if ver["$id"] != co.VERDICT_SCHEMA or ver["properties"]["schema_version"]["const"] != co.VERDICT_SCHEMA:
+            problems.append("verdict schema version")
+        if set(ver["$defs"]["verdict"]["required"]) != set(co.VERDICT_REQUIRED) or (
+                ver["$defs"]["verdict"]["properties"]["category"]["enum"] != list(co.CATEGORIES)):
+            problems.append("verdict fields")
+    except (OSError, KeyError, ValueError) as e:
+        problems.append("schema files unreadable: {}".format(e))
+    preserve = skills["comprev-dataml-phases"].split("4. **Preserve** all scaffold-owned", 1)[-1].split(
+        "5. **Verify file signatures**", 1)[0]
+    for helper in ("scripts/citation_occurrences.py", "provenance/citation_occurrences.schema.json",
+                   "provenance/citation_verdicts.schema.json", "scripts/phase_ledger.py"):
+        if "`{}`".format(helper) not in preserve:
+            problems.append("Phase 14 push does not preserve " + helper)
+    if {p: phase_ledger.PHASES[p].contract for p in phase_ledger.CITATION_PHASES} != {
+            "15": "extract", "15V": "coverage", "16": "verdicts"}:
+        problems.append("ledger citation contracts")
+    check("CITATION_CONTRACT_CONSISTENT", not problems, str(problems))
 
     print("\n{}/{} checks passed".format(len(total) - len(failures), len(total)))
     return 1 if failures else 0

@@ -147,6 +147,31 @@ that the claimed finding actually matches the paper's abstract.
 > it must be MISATTRIBUTED regardless of whether the abstract seemed
 > compatible."
 
+**Persisting verdicts (Phase 16 output, `provenance/citation_verification.json`).** The coordinator
+collects every batch result into one envelope
+(`comprev.citation_verification/1`, schema `provenance/citation_verdicts.schema.json`, checked by `python scripts/citation_occurrences.py validate-verdicts`):
+`schema_version`, `manuscript_revision`, `extraction_digest` (both copied from
+`provenance/citation_triples.json`) and `verdicts`. There is **exactly one verdict per
+`occurrence_id`** in the extraction, in addition to the fields above (`cite_key`, `category`,
+`failed_at_step`, `verification_depth`, `supporting_passage`, `details`, `correct_metadata`,
+`suggested_action`) each verdict carries `occurrence_id` and `manuscript_revision`. A key cited
+five times is five verdicts. Missing, unknown or duplicate ids, a stale revision or an unknown
+category fail the gate.
+
+Evidence is a small local reference, not prose: save the retrieved text (full text, or the abstract
+as an explicit fallback) under `provenance/citation_evidence/` and record
+`evidence: {status: "available", depth: "fulltext"|"abstract_only", citation_key, path, sha256,
+passage_span: [start, end)}` (UTF-8 byte offsets), where `supporting_passage` is exactly those bytes.
+`abstract_only` also needs `fulltext_unavailable_reason`. `status` is `available`,
+`unavailable` or `unverifiable` (with a `reason`); anything else fails closed. A **VERIFIED** verdict
+needs available text, matching depth, the bound passage, and
+`scientific_checks_attestation: {protocol: "comprev-verification/phase-16", steps_completed:
+[1,2,3,4,5], attested_by: <your frame id>}`. A verdict that cannot reach text is not VERIFIED: give it
+the matching category plus `details` explaining the manual review needed (evidence may then be
+`unavailable`/`unverifiable` or omitted). `metadata_only` is never valid. The tool checks
+availability, hash and passage binding; it does **not** judge whether the passage supports the claim,
+and the attestation is recorded, not proven. That judgment remains yours (the five steps above).
+
 **Contamination confirmation scan (final safety net):**
 
 Run BEFORE per-triple verification on the assembled document:

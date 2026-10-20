@@ -40,5 +40,9 @@ jobs:
       - name: Phase-ledger tests with assertions stripped
         run: python -O -m unittest discover -s test -p 'test_phase_ledger.py'
 
+      # Deterministic citation extraction and exact coverage (also under -O: no assert-based checks).
+      - name: Citation-occurrence tests with assertions stripped
+        run: python -O -m unittest discover -s test -p 'test_citation_occurrences.py'
+
       - name: Prose-fidelity self-test
         run: python scripts/check_prose_fidelity.py --self-test

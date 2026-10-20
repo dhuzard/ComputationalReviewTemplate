@@ -1,0 +1,150 @@
+# Citation occurrences
+
+`scripts/citation_occurrences.py` is the deterministic half of Phases 15, 15V and 16: it finds every
+`{cite:p}` / `{cite:t}` key occurrence in the manuscript sources, checks that an inventory lists
+exactly those, and checks that Phase 16 left exactly one well-formed verdict per occurrence. Standard
+library only (Python >= 3.9), no network, no LLM, no `assert` (so `python -O` changes nothing).
+`scripts/phase_ledger.py` calls it at admission and on every re-verification
+([phase-ledger.md](phase-ledger.md)).
+
+## What it proves, and what it never proves
+
+It proves mechanical facts only: which occurrences exist (found by a fresh rescan, never read from a
+submitted file), that an inventory/coverage file/verdict file matches that rescan exactly, that each
+VERIFIED verdict points at local evidence text whose hash and passage still match, and that nothing
+was edited since the revision was pinned.
+
+It **never** proves that a claim is true or that a cited paper supports it. That is the independent
+LITREVIEW protocol of `skills/comprev-verification.md` (Phase 16). A VERIFIED verdict's
+`scientific_checks_attestation` is *recorded*, not trusted as science; evidence *availability* (a
+mechanical fact) is kept separate from *support* (a judgment).
+
+## v1 scope
+
+**Sources (fixed, no configuration can exclude one):** `content/**/*.md`, bibliographies
+`content/**/*.bib` and root `*.bib`. The one local `{include}` that `content/Methods.md` uses
+(`provenance/review_request.md` with `:start-after:` / `:end-before:`) is supported; the included
+file joins the revision, and a citation inside an included region is refused (`citation_in_include`)
+rather than lost. Generated LaTeX mirrors are not scanned. A missing `content/` directory, a symlink
+(file, directory or include), invalid UTF-8, a byte-order mark, an unreadable file or a path that
+leaves the repository fails.
+
+**Extracted:** `{cite:p}` and `{cite:t}` in active prose, including headings, lists, blockquotes,
+tables, captions, link labels, footnotes, prose directive bodies (`note`, `warning`, `figure`,
+`table`, `card`, `tab-item`, `dropdown`, `prf:*`, ... , colon or backtick fenced, nested) and prose
+directive titles (`admonition`, ...). One record per key: `{cite:p}`A, B`` is two records,
+`key_index` 0 and 1; repeated keys, also inside one role, are repeated records.
+
+**Not extracted:** normal backtick/tilde fences and code directives (`code-cell`, `code-block`,
+`math`, `raw`, `mermaid`, ...), inline code (any backtick run length), indented code, HTML comments
+(multi-line, with blank lines), URL destinations and autolinks, link reference definitions, YAML
+front matter, `\{cite:p}` escapes. When it is ambiguous whether text is code, it is scanned as prose
+(a 4-space-indented paragraph inside a list item is prose), so the failure mode is an extra occurrence
+that needs a verdict, never a silently lost one.
+
+**Refused (fail closed, JSON diagnostic with file and line):** other cite roles (`{cite:ps}`,
+`{cite:author}`, ...), `{cite:p}` without a backtick key list, `[@key]` and bare `@key`, empty or
+malformed keys, an unterminated role, fence, comment or front matter, citation syntax in front
+matter, a `%` comment line, link destination or reference definition that contains citation
+syntax, an unknown directive whose
+body contains citation syntax, an unsupported `{include}` form, a key with no `.bib` entry, and
+duplicate or unparseable `.bib` entries (the `.bib` parser is a bounded brace/quote-aware reader for
+`@type{key, ...}` entries; `@string`, `@preamble` and `@comment` are skipped).
+
+## Identity
+
+`manuscript_revision` is the sha256 of the scanner version plus, for every source and include in
+sorted path order, its path, length and raw bytes (bibliographies included). Any byte change anywhere
+makes a new revision. `occurrence_id` is the sha256 of the canonical JSON of
+`{schema_version, manuscript_revision, relative_file, byte_span, key_index}`; `byte_span` is the
+zero-based half-open UTF-8 byte range of the whole role (CRLF, bare CR and non-ASCII text
+included), `line_range` the one-based inclusive lines it touches.
+
+## Files
+
+| File | Written by | Schema |
+|---|---|---|
+| `provenance/citation_snapshot/` (`manifest.json`, `files/...`) | `snapshot` (Phase 15) | `comprev.citation_snapshot/1` |
+| `provenance/citation_triples.json` | `extract` (Phase 15) | [`provenance/citation_occurrences.schema.json`](../provenance/citation_occurrences.schema.json) |
+| `provenance/citation_coverage.json` | `coverage` (Phase 15V) | `comprev.citation_coverage/1` (deterministic; recomputed, never trusted) |
+| `provenance/citation_verification.json` | the coordinator, from Phase 16 batch results | [`provenance/citation_verdicts.schema.json`](../provenance/citation_verdicts.schema.json) |
+| `provenance/citation_evidence/*` | Phase 16 agents | saved retrieved text, referenced by sha256 |
+
+The extraction envelope is `{schema_version, scanner_version, manuscript_revision, sources[],
+occurrence_count, extraction_digest, occurrences[]}`; each occurrence has exactly the nine core fields
+`schema_version, manuscript_revision, occurrence_id, relative_file, byte_span, line_range,
+directive_kind, key_index, citation_key`, plus optional `context` (verbatim lines) and `bib_entry`
+(exact entry text and location), both compared against the rescan when present, and an optional
+advisory `claimed_finding` (never a mechanical fact, never compared). The schema files describe
+structure and are kept in step with the runtime by tests; equality with the manuscript is checked at
+runtime by rescanning. Zero citations is valid but must be an explicit, complete inventory
+(`occurrences: []`); a missing file is a failure.
+
+The verification envelope is `{schema_version, manuscript_revision, extraction_digest, verdicts[]}`.
+Each verdict keeps the Phase 16 fields (`cite_key`, `category`, `failed_at_step`,
+`verification_depth`, `supporting_passage`, `details`, `correct_metadata`, `suggested_action`) and adds
+`occurrence_id`, `manuscript_revision`, `evidence` and `scientific_checks_attestation`.
+
+* `VERIFIED` needs `failed_at_step: null`, `verification_depth` `fulltext` or `abstract_only`,
+  `evidence.status: "available"` with the same depth, a `path` under `provenance/citation_evidence/`,
+  the file's `sha256`, and `supporting_passage` equal to the file bytes at `passage_span`
+  (UTF-8 byte offsets); abstract fallback needs `fulltext_unavailable_reason`; the attestation must be
+  `{protocol: "comprev-verification/phase-16", steps_completed: [1,2,3,4,5], attested_by}`.
+* `unavailable` / `unverifiable` evidence, an unknown status, `metadata_only` and a missing,
+  tampered, mismatched or out-of-range evidence file can never be VERIFIED. A non-VERIFIED verdict may
+  omit evidence if `details` explains the manual review needed.
+* Unknown fields, wrong JSON types (a `true` where an integer is required), duplicate JSON keys,
+  `NaN`, a byte-order mark and an unsupported `schema_version` are rejected.
+
+## Commands
+
+All print one `comprev.citation_diagnostics/1` JSON object (`ok`, `error_count`,
+`errors[{code, message, file?, line?, occurrence_id?}]`) and exit 1 on failure (2 on usage errors).
+
+| Command | Does |
+|---|---|
+| `extract [--out FILE\|-]` | scan and write `provenance/citation_triples.json` |
+| `snapshot [--supersede]` | copy every scanned source into the immutable snapshot; `--supersede` moves an old one aside (after `reopen_phase('15', ...)`) |
+| `coverage` | verify snapshot + extraction + live equality, write `citation_coverage.json`, print its sha256 |
+| `validate-occurrences [--file F]` | **live**: rescan, compare the inventory exactly |
+| `validate-verdicts [--file F]` | **live**: rescan, check the extraction, then every verdict and its evidence |
+| `audit-historical [--snapshot DIR]` | explicit audit of a pinned snapshot's extraction, coverage and verdicts; compares nothing with the current manuscript |
+
+There is no flag that skips the rescan, trusts an inventory or relaxes a check: the public validators
+are always live. Python API: `scan_sources`, `check_inventory`, `check_verdicts`, `validate_occurrences`,
+`validate_verdicts`, `create_snapshot`, `verify_snapshot`, `write_coverage`, `audit_historical`,
+`assemble_verification`.
+
+## Failure codes (selection)
+
+Structure: `invalid_json`, `not_an_object`, `missing_file`, `malformed_envelope`, `malformed_record`,
+`malformed_verdict`, `malformed_evidence`, `unsupported_schema_version`, `count_mismatch`.
+Staleness: `stale_revision`, `stale_snapshot`, `source_added`, `source_removed`, `source_modified`,
+`extraction_digest_mismatch`, `digest_mismatch`. Identity: `duplicate_occurrence_id`,
+`duplicate_occurrence`, `invalid_occurrence_id`, `missing_occurrence`, `unknown_occurrence`,
+`occurrence_mismatch`. Verdicts: `missing_verdict`, `unknown_verdict_id`, `duplicate_verdict`,
+`unknown_category`, `verdict_key_mismatch`, `missing_explanation`, `depth_without_evidence`,
+`metadata_only_not_valid`, `missing_attestation`, `invalid_attestation`. Evidence:
+`evidence_not_available`, `unknown_evidence_status`, `evidence_missing`, `evidence_hash_mismatch`,
+`evidence_key_mismatch`, `evidence_path_invalid`, `passage_mismatch`, `passage_out_of_range`,
+`passage_not_utf8`, `depth_mismatch`, `fulltext_fallback_unexplained`. Snapshot/coverage:
+`snapshot_exists`, `snapshot_missing`, `snapshot_malformed`, `snapshot_file_modified`,
+`snapshot_file_unlisted`, `snapshot_file_missing`, `snapshot_rescan_mismatch`, `coverage_missing`,
+`coverage_mismatch`, `report_not_bound`. Sources: `missing_source_root`, `symlink_refused`,
+`invalid_utf8`, `bom_not_allowed`, `unreadable_source`, `source_too_large`, `path_escape`,
+`bib_parse_error`, `invalid_bib_key`, `duplicate_bib_key`, `unresolved_bib_key`, and the scanner
+refusals `unsupported_cite_role`, `malformed_cite_role`, `unterminated_role`, `empty_key`,
+`invalid_key`, `unterminated_fence`, `unterminated_comment`, `unterminated_frontmatter`,
+`citation_in_frontmatter`, `citation_in_include`, `citation_in_comment_line`,
+`citation_in_reference_definition`, `ambiguous_link_destination`, `unsupported_citation_syntax`,
+`unsupported_directive_citation`, `unsupported_include`, `include_marker_not_found`.
+
+## Limitations
+
+* The scanner is a conservative line/inline state machine, not a full CommonMark/MyST parser. A
+  construct it cannot classify is either refused or scanned as prose; it never guesses "code" to make
+  an occurrence disappear.
+* HTML blocks, math, and `csv-table`-style directives are not interpreted: a role inside them is
+  scanned as prose (an extra record) or, for unknown directives, refused.
+* No generalised receipt store, patch model or Methods-text accounting: that is Phase 16-20 follow-up
+  design and is deliberately not implemented here.

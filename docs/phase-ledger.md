@@ -65,11 +65,49 @@ expected_revision=None)` registers:
 | `child_ids` | Non-empty list of unique agent frame ids. Must be disjoint from the paired actor's (`NV` vs `N`; `8` vs `7`; `12` vs `11`). |
 | gate file | Where the phase has one: found in `provenance/` then the working directory (symlinks refused), size-capped, strict JSON (duplicate keys and `NaN` rejected), sha256 recorded. |
 | `report` | Only for `1V`, `15V`, `17V`, `19V`, whose verdict is not in a named file. Its canonical digest is recorded. |
-| outputs | `15` needs `citation_triples.json`, `17` needs `fix_requests.json`; non-empty, digest recorded. |
+| outputs | `15` needs `citation_snapshot/` + `citation_triples.json`, `15V` needs `citation_coverage.json`, `16` needs `citation_verification.json`, `17` needs `fix_requests.json`; non-empty, digest recorded. `15`, `15V` and `16` also carry the citation contract below. |
 
-Phases `16`, `18`, `19` and the other actor phases have no deterministic output file in the
-pipeline, so their receipt is `artifact_id` + `child_ids` only. That is a record that the action
-was reported done, not evidence about its content.
+Phases `18`, `19` and the other actor phases have no deterministic output file in the pipeline, so
+their receipt is `artifact_id` + `child_ids` only. That is a record that the action was reported
+done, not evidence about its content.
+
+### Citation contract (Phases 15, 15V, 16)
+
+These three phases are not trust-the-report phases. Admission calls `scripts/citation_occurrences.py`
+([citation-occurrences.md](citation-occurrences.md)), which rescans the manuscript sources from
+scratch (fixed discovery: `content/**/*.md`, `content/**/*.bib`, root `*.bib`; nothing configurable),
+inside the ledger lock, and compares exactly:
+
+| Phase | Needs | Admission re-derives |
+|---|---|---|
+| `15` | `provenance/citation_snapshot/` (immutable copy + manifest) and `provenance/citation_triples.json` | snapshot integrity and an independent rescan of it; extraction == that rescan; **live sources == snapshot** (same revision, same file list, so no omitted or added source) |
+| `15V` | `provenance/citation_coverage.json` and a `report` carrying `citation_coverage_sha256`, `manuscript_revision`, `occurrence_count` | the whole phase-15 check again (live and snapshot), the coverage file against a byte-exact recomputation, and the report against that file. A bare `{"gate": "pass", "phase": 15}` is refused |
+| `16` | `provenance/citation_verification.json` | live == snapshot again, extraction exact, exactly one verdict per occurrence id, VERIFIED evidence hash/passage binding, no stale revision. Frames must differ from both `15` and `15V` |
+
+A failure raises `CitationGateError` (a `GateError`) whose `.diagnostics` list carries the
+machine-readable codes (`stale_snapshot`, `missing_occurrence`, `report_not_bound`,
+`missing_verdict`, `evidence_hash_mismatch`, ...); the ledger bytes and revision are unchanged. The
+`verify` command prints the same diagnostics as JSON on stdout and exits 1. The snapshot, extraction,
+coverage and verification file hashes are recorded in `outputs`.
+
+**Live until sealed, historical after.** Until phase `16` is *recorded* complete, `restart`,
+`require_phase`, `check_gate` and `advance_phase` re-verify `15` and `15V` against the **live**
+manuscript too: any added, deleted or modified markdown, bibliography or include fails with
+`stale_snapshot` (+ `source_added` / `source_removed` / `source_modified`). A failed `16` records
+nothing and seals nothing; a file such as `citation_sealed.json` seals nothing. Only the recorded
+success of `16` turns `15`, `15V` and `16` into *historical* receipts of that pinned revision: from
+then on they validate the snapshot's integrity (with a fresh rescan of the snapshot), the pinned
+extraction, the recomputed coverage, and the verdicts with their evidence files, and they do **not**
+compare the current manuscript. That is deliberate: Phase 19 applies approved repairs and Phase 20a
+refreshes `content/Methods.md`, both of which legitimately change live markdown. The ledger does not
+claim that Phase 16 verified the edited text, and the live public validators
+(`citation_occurrences.py validate-occurrences` / `validate-verdicts`) correctly fail after such edits.
+`phase_ledger.citation_seal_state(root)` reports the sealing state *from the ledger*.
+
+`reopen_phase('15' | '15V' | '16', reason)` clears that phase and everything after it, so the live
+check applies again. To re-extract after a manuscript change: `reopen_phase('15', ...)`, then
+`citation_occurrences.py snapshot --supersede` (moves the old snapshot to
+`citation_snapshot.superseded-N`), `extract`, and run `15`, `15V`, `16` again.
 
 ### Gate contracts
 
@@ -153,6 +191,16 @@ raise `LedgerCorrupt`.
 | A phase must be redone (critic found a defect, fix pass) | `reopen_phase(id, reason)` resets `id` and every later phase to pending and records the reason. |
 | Stale `.lock` on a platform without `fcntl` | Delete it once you have confirmed no writer is running. |
 
+## Migration from a ledger without the citation contract
+
+A state file whose `15`, `15V` or `16` receipt predates the citation contract (outputs missing the
+snapshot, coverage or verification digest) is rejected as `LedgerCorrupt` ("predates the citation
+contract") and is **not** reset or converted. Move it aside, `init_ledger()`, and re-register the
+phases in order; for `15`/`15V`/`16` first create the new artifacts (`snapshot`, `extract`, `coverage`,
+and the Phase 16 verification envelope with evidence files). A run that is already past `16` and has
+edited its live manuscript cannot be sealed retroactively: its citation phases must be redone on a
+fresh snapshot of the current text.
+
 ## Migration from the pre-ledger state
 
 Earlier runs kept `phase_ledger = {'phase_1': {...}}` in memory, wrote it to a bare
@@ -179,3 +227,8 @@ the first one that does not. `resolve_phase(old_id, allow_legacy=True)` translat
 CI). Covers canonical order against the orchestrator index, invalid ids, every gate contract,
 missing/failed/malformed gates, tampering after approval, malformed and truncated state,
 restart across processes, interrupted and concurrent writes, and the skills' own ledger calls.
+The citation contract is covered by `test_citation_occurrences.py` (scanner, bibliography, discovery,
+inventory, verdicts, evidence, snapshot, coverage, historical audit, schema/runtime agreement, CLI)
+and by the `CitationContract` class of `test_phase_ledger.py` (admission, synthetic-report bypass,
+restart with tamper, failed `16` does not seal, reopen and re-seal, and a full run through `21` with
+Phase 19 repairs and a 20a Methods refresh). Both also run with `python -O` in CI.

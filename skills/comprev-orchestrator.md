@@ -146,9 +146,9 @@ The coordinator uses this table to delegate each phase. The full delegation temp
 | 13 | **actor** | DATAML | `comprev-dataml-phases` | Methods.md | `gate_methods.json`: 8 subsections |
 | 14 | **actor** | DATAML | `comprev-dataml-phases` | assembled manuscript | all files collected, toc updated |
 | 14V | **validator** | DATAML | `comprev-myst-validator` | `gate_assembly.json` | myst build passes, structural checks, **`BIBLIOGRAPHY_PATH_MATCHES_MYSTYML`** (every path in `myst.yml` `project.bibliography` exists, is ≥1 KB, and has ≥100 `@`-entries), **`BIB_CITE_KEYS_RESOLVE`** (when myst build is deferred, every `{cite:p}/{cite:t}/\citep/\citet` key in `content/*.md` and `latex/manuscript.tex` resolves in the declared bibliography), **`EVIDENCE_DATABASE_DECLARATION`** (the Evidence Explorer explicitly declares `available` or `not_provided`), **`EVIDENCE_PACKAGES_LOADABLE`** (a declared database has compatible packages; discovered, loaded, and rejected files are reported), **`EVIDENCE_EXPLORER_CONTRACT`** (manifest/discovery and canonical-schema or explicit-compatibility rules hold), **`REVIEW_COMPATIBILITY_REPORT_VALID`** (`scripts/review-compatibility-report.mjs validate` passes; evidence-package `pass` records schema versions, successful loader diagnostics, and zero rejected packages), **`REVIEW_REQUEST_CAPTURED`** (`provenance/review_request.{md,txt}` exist, no scaffold placeholders remain, `gate_scope.json` carries `review_request_path`, `content/Methods.md` includes the prompt block), **`PLUGIN_DIRECTIVES_INVOKED`** (every plugin directive registered in `myst.yml` has ≥1 `:::{name}` invocation in `content/*.md` and zero bare-`{name}` role-syntax mis-invocations), **`FIGURE_DROPDOWN_MATCH`** (`:::{dropdown} 📓 Figure code` count == `:::{figure}` count per section), **`FIGURE_NOTEBOOK_MATCH`** (every figure has a non-stub `.ipynb`), **`FIGURE_NOTEBOOK_SELF_CONTAINED`** (every notebook is runnable in a vanilla SciPy environment; any project-local import must be `shared_style` resolvable to a `figures/notebooks/shared_style.py` with the required symbols), **`HEADING_STYLE_CONSISTENT`** (zero problems from `audit_headings`: no manual number prefixes, no wrapped headings, no en-/em-dashes, H1 and H2 styles match within each section, body sections share one H1 style), **`NO_WRITER_SCRATCHPAD`**, **`CITE_DIRECTIVE_SYNTAX_CLEAN`**. `structural_results` MUST contain a key for every check defined in the validator skill — missing key ⇒ fail. HARD FAIL — never downgrade to a `note`. |
-| 15 | **actor** | DATAML | `comprev-dataml-phases` | citation_triples.json | all triples extracted |
-| 15V | **validator** | DATAML | `comprev-triples-validator` | validation report | exhaustive count, sentences in files, keys in bib |
-| 16 | **critic** | LITREVIEW | `comprev-verification` + `comprev-reviewer-agent` | verification results | ALL triples deep-checked |
+| 15 | **actor** | DATAML | `comprev-dataml-phases` | `provenance/citation_snapshot/` + `citation_triples.json` | immutable source snapshot and exact deterministic extraction of every `{cite:p}`/`{cite:t}` key occurrence (`scripts/citation_occurrences.py`) |
+| 15V | **validator** | DATAML | `comprev-triples-validator` | `citation_coverage.json` + validation report | independent rescan of live sources and snapshot equals the extraction exactly; report binds the persisted coverage hash |
+| 16 | **critic** | LITREVIEW | `comprev-verification` + `comprev-reviewer-agent` | `citation_verification.json` | ALL triples deep-checked; exactly one verdict per occurrence id, VERIFIED backed by hash-bound local evidence |
 | 17 | **actor** | DATAML | `comprev-dataml-phases` | fix_requests.json | fix requests for non-VERIFIED triples |
 | 17V | **validator** | DATAML | `comprev-triples-validator` | validation report | full coverage, context exists |
 | 18 | **actor** | LITREVIEW | `comprev-fix-execution` + `comprev-reviewer-agent` + `comprev-writing-style` | fix diffs | fixes executed, prose fidelity re-checked |
@@ -184,8 +184,9 @@ Each phase transition requires a named gate artifact. The coordinator saves it b
 | 13 → 14 | `gate_methods.json` | Methods.md artifact ID, ledger sub-block populated |
 | 14 → 14V | (assembled manuscript) | LaTeX + content/*.md + figures + notebooks present |
 | 14V → 15 | `gate_assembly.json` | All build/structural assertions passed |
-| 15 → 16 | `citation_triples.json` | Triple count, batch IDs, schema version |
-| 16 → 17 | (verification reports) | Per-triple verdicts, MUST_FIX count |
+| 15 → 15V | `citation_snapshot/`, `citation_triples.json` | Occurrence count, manuscript revision, extraction digest, schema version |
+| 15V → 16 | `citation_coverage.json` | Revision, occurrence count, coverage sha256 bound in the validator report |
+| 16 → 17 | `citation_verification.json` | Per-occurrence verdicts, evidence references, MUST_FIX count |
 | 17 → 18 | `fix_requests.json` | Fix-request count, target files, contexts |
 | 18 → 19 | (fix diffs) | Applied diffs, reverse-order verification |
 | 19 → 19V | (updated files) | Patched .md and .bib |
@@ -247,8 +248,25 @@ require_phase('9V')                                                        # art
   `FAIL_REQUIRES_USER_SIGNOFF` only with a recorded `user_signoff` of `proceed`.
 - Phases 1V, 15V, 17V and 19V have no gate file carrying the verdict: pass the validator's
   structured result as `report=`; its digest is recorded. 19V's report must carry
-  `section_md_vids_final`. Phases 15 and 17 additionally need `citation_triples.json` /
-  `fix_requests.json`, whose digests are recorded.
+  `section_md_vids_final`. Phase 17 additionally needs `fix_requests.json`, whose digest is
+  recorded.
+- Phases 15, 15V and 16 carry a **citation contract** (`scripts/citation_occurrences.py`, reference
+  `docs/citation-occurrences.md`). Admission independently rescans the manuscript sources, so a
+  submitted inventory, coverage file or report is never trusted: `15` needs
+  `provenance/citation_snapshot/` and an extraction that equals a fresh scan of both snapshot and
+  live sources; `15V` needs `provenance/citation_coverage.json` (written by
+  `python scripts/citation_occurrences.py coverage`) and a `report` carrying its
+  `citation_coverage_sha256`, `manuscript_revision` and `occurrence_count` (a bare
+  `{"gate": "pass"}` is refused); `16` needs `provenance/citation_verification.json` with exactly one
+  verdict per occurrence id and hash-bound local evidence for every VERIFIED. Failures raise
+  `CitationGateError` with machine-readable `.diagnostics` codes and leave the ledger untouched.
+  Until `16` is **recorded** complete, `restart`/`require_phase`/`advance_phase` also require the live
+  manuscript to still equal the Phase 15 snapshot. Once `16` is recorded, 15/15V/16 are *historical*
+  receipts of that revision (snapshot, extraction, coverage, verdicts, evidence); later approved
+  repairs (19) and the Methods refresh (20a) may change live files, and the ledger does not claim
+  that Phase 16 verified the edited text. A failed 16 seals nothing; `reopen_phase('15'|'15V'|'16', ...)`
+  clears the downstream phases and makes the live check apply again. Mechanical checks never prove
+  that a citation supports its claim; that stays the independent LITREVIEW Phase 16 protocol.
 - Coordinator/critic gates have a deterministic contract, no judgment: `gate_scaffold_approved`
   (four booleans true), `gate_figure_audit` (`redesign_remaining == 0`,
   `verdict_counts_post_resolution`, `critic_frame_ids`), `gate_critic_complete` and
@@ -559,7 +577,7 @@ Canonical triggers (non-exhaustive):
 | 7 → 8 | `comprev-myst-validator` | MyST syntax: :name:, dropdowns, cite keys, no process language |
 | 9 → 10 | `comprev-citation-validator` | Bib entries match CrossRef, all keys present |
 | 14 → 15 | `comprev-myst-validator` | `myst build --html` passes, structural checks |
-| 15 → 16 | `comprev-triples-validator` | Exhaustive count, sentences in files |
+| 15 → 16 | `comprev-triples-validator` | Exact occurrence coverage (fresh rescan), snapshot integrity |
 | 17 → 18 | `comprev-triples-validator` | Fix coverage, context exists |
 | 19 → 20 | `comprev-myst-validator` | Build still passes after fixes |
 | 20 (final) | `comprev-myst-validator` | Fresh clone builds, all files present |

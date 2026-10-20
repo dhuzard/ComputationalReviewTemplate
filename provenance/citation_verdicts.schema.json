@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "comprev.citation_verification/1",
+  "title": "Phase 16 citation verdicts (provenance/citation_verification.json)",
+  "description": "Exactly one verdict per extracted occurrence. The schema checks structure; the runtime validator additionally checks ids and revision against a fresh rescan and re-reads the referenced local evidence file (hash and passage binding). Evidence availability is a mechanical fact; whether the passage supports the claim is the independent LITREVIEW judgment and is only attested, never proven, here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "manuscript_revision", "extraction_digest", "verdicts"],
+  "properties": {
+    "schema_version": {"const": "comprev.citation_verification/1"},
+    "manuscript_revision": {"$ref": "#/$defs/sha256"},
+    "extraction_digest": {"$ref": "#/$defs/sha256"},
+    "verdicts": {"type": "array", "items": {"$ref": "#/$defs/verdict"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["occurrence_id", "manuscript_revision", "cite_key", "category", "failed_at_step", "verification_depth", "supporting_passage", "details"],
+      "properties": {
+        "occurrence_id": {"$ref": "#/$defs/sha256"},
+        "manuscript_revision": {"$ref": "#/$defs/sha256"},
+        "cite_key": {"type": "string", "minLength": 1},
+        "category": {"enum": ["VERIFIED", "MINOR", "CHIMERIC", "HALLUCINATED", "MISATTRIBUTED"]},
+        "failed_at_step": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
+        "verification_depth": {"enum": ["fulltext", "abstract_only", null], "description": "metadata_only is never valid; null only for a non-VERIFIED verdict that retrieved nothing"},
+        "supporting_passage": {"type": ["string", "null"]},
+        "details": {"type": ["string", "null"]},
+        "correct_metadata": {"type": ["object", "null"]},
+        "suggested_action": {"type": ["string", "null"]},
+        "evidence": {"oneOf": [{"$ref": "#/$defs/evidence_available"}, {"$ref": "#/$defs/evidence_unavailable"}]},
+        "scientific_checks_attestation": {"$ref": "#/$defs/attestation"}
+      }
+    },
+    "evidence_available": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "depth", "citation_key", "path", "sha256", "passage_span"],
+      "properties": {
+        "status": {"const": "available"},
+        "depth": {"enum": ["fulltext", "abstract_only"]},
+        "citation_key": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "pattern": "^provenance/citation_evidence/.+"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "passage_span": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}, "description": "zero-based half-open byte offsets of supporting_passage in the evidence file"},
+        "fulltext_unavailable_reason": {"type": "string", "minLength": 1, "description": "required when depth is abstract_only"}
+      }
+    },
+    "evidence_unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "citation_key", "reason"],
+      "properties": {
+        "status": {"enum": ["unavailable", "unverifiable"]},
+        "citation_key": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "steps_completed", "attested_by"],
+      "properties": {
+        "protocol": {"const": "comprev-verification/phase-16"},
+        "steps_completed": {"const": [1, 2, 3, 4, 5]},
+        "attested_by": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
